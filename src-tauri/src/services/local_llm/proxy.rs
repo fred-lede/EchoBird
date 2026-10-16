@@ -800,6 +800,17 @@ fn anthropic_tool_result_content(
                 if let Some(part) = block.get("text").and_then(|value| value.as_str()) {
                     text.push_str(part);
                 }
+            } else if block.get("type").and_then(|value| value.as_str()) == Some("tool_reference") {
+                if let Some(name) = block
+                    .get("tool_name")
+                    .and_then(|value| value.as_str())
+                    .filter(|name| !name.is_empty())
+                {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!("Tool {name} is loaded and can be called now."));
+                }
             } else if let Some(part) = anthropic_user_content_part(block) {
                 attachments.push(part);
             }
@@ -1019,10 +1030,12 @@ pub(crate) fn openai_to_anthropic(data: &serde_json::Value) -> serde_json::Value
 
     let mut content_blocks: Vec<serde_json::Value> = Vec::new();
 
-    if let Some(text) = message
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-    {
+    if let Some(text) = message.and_then(|m| {
+        m.get("content")
+            .and_then(|c| c.as_str())
+            .filter(|text| !text.is_empty())
+            .or_else(|| m.get("refusal").and_then(|value| value.as_str()))
+    }) {
         if !text.is_empty() {
             content_blocks.push(serde_json::json!({"type": "text", "text": text}));
         }
@@ -1165,6 +1178,59 @@ mod tests {
             "data:image/jpeg;base64,anBlZw=="
         );
         assert_eq!(follow_up[2]["text"], "What is wrong?");
+    }
+
+    #[test]
+    fn tool_reference_results_keep_loaded_tool_names_and_pairing() {
+        for content in [
+            serde_json::json!([
+                {"type":"tool_reference","tool_name":"mcp__fixture__read"},
+                {"type":"tool_reference","tool_name":"mcp__fixture__write"}
+            ]),
+            serde_json::json!([
+                {"type":"text","text":"Loaded tools:"},
+                {"type":"tool_reference","tool_name":"mcp__fixture__read"},
+                {"type":"tool_reference","tool_name":"mcp__fixture__write"}
+            ]),
+        ] {
+            let converted = anthropic_to_openai(&serde_json::json!({"messages":[
+                {"role":"assistant","content":[{"type":"tool_use","id":"search_call","name":"ToolSearch","input":{"query":"fixture"}}]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"search_call","content":content}]}
+            ]}));
+            let messages = converted["messages"].as_array().unwrap();
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0]["tool_calls"][0]["id"], "search_call");
+            assert_eq!(messages[1]["role"], "tool");
+            assert_eq!(messages[1]["tool_call_id"], "search_call");
+            let text = messages[1]["content"].as_str().unwrap();
+            assert!(text.contains("mcp__fixture__read"));
+            assert!(text.contains("mcp__fixture__write"));
+            assert!(!text.is_empty());
+            if content[0]["type"] == "text" {
+                assert!(text.starts_with("Loaded tools:"));
+            }
+        }
+    }
+
+    #[test]
+    fn json_refusals_remain_visible_when_answer_content_is_missing() {
+        for message in [
+            serde_json::json!({"role":"assistant","refusal":"I cannot help with that."}),
+            serde_json::json!({"role":"assistant","content":null,"refusal":"I cannot help with that."}),
+            serde_json::json!({"role":"assistant","content":"","refusal":"I cannot help with that."}),
+        ] {
+            let converted = openai_to_anthropic(
+                &serde_json::json!({"choices":[{"message":message,"finish_reason":"stop"}]}),
+            );
+            assert_eq!(
+                converted["content"],
+                serde_json::json!([{"type":"text","text":"I cannot help with that."}])
+            );
+        }
+        let converted = openai_to_anthropic(
+            &serde_json::json!({"choices":[{"message":{"content":"Answer already present","refusal":"Other explanation"},"finish_reason":"stop"}]}),
+        );
+        assert_eq!(converted["content"][0]["text"], "Answer already present");
     }
 
     #[test]

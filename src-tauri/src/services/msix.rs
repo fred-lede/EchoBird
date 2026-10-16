@@ -16,12 +16,18 @@ fn configured_identity(uri: &str) -> Option<(&str, &str)> {
     (!identity.is_empty() && !publisher.is_empty() && !app.is_empty()).then_some((identity, app))
 }
 
+fn identity_matches(configured: &str, installed: &str) -> bool {
+    installed == configured
+        || installed.strip_suffix("Beta") == Some(configured)
+        || (configured == "NousResearch.HermesBundled"
+            && installed == "NousResearchInc.HermesAgent")
+}
+
 fn select_application(uri: &str, applications: &[Application]) -> Option<String> {
     let (identity, app_id) = configured_identity(uri)?;
-    let beta = format!("{identity}Beta");
     let selected = applications
         .iter()
-        .filter(|app| app.identity == identity || app.identity == beta)
+        .filter(|app| identity_matches(identity, &app.identity))
         .max_by_key(|app| {
             (
                 app.identity == identity,
@@ -39,12 +45,11 @@ fn installed_applications(identity: &str) -> windows::core::Result<Vec<Applicati
     use windows::{core::HSTRING, Management::Deployment::PackageManager};
 
     let packages = PackageManager::new()?.FindPackagesByUserSecurityId(&HSTRING::new())?;
-    let beta = format!("{identity}Beta");
     let mut applications = Vec::new();
     for package in packages {
         let id = package.Id()?;
         let name = id.Name()?.to_string();
-        if name != identity && name != beta {
+        if !identity_matches(identity, &name) {
             continue;
         }
         let version = id.Version()?;
@@ -137,6 +142,33 @@ mod tests {
         assert_eq!(select_application(uri, &apps), expected);
         apps.reverse();
         assert_eq!(select_application(uri, &apps), expected);
+    }
+
+    #[test]
+    fn hermes_official_and_store_packages_resolve_the_registered_desktop_entry() {
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tools/hermes/paths.json")).unwrap();
+        let uri = catalog["launchUri"].as_str().unwrap();
+        let store = app("NousResearchInc.HermesAgent", "HermesBundled", 2);
+        assert_eq!(
+            select_application(uri, std::slice::from_ref(&store)),
+            Some("shell:AppsFolder\\NousResearchInc.HermesAgent_newpublisher!HermesBundled".into())
+        );
+        let official = app("NousResearch.HermesBundled", "HermesBundled", 1);
+        assert_eq!(
+            select_application(uri, &[store, official]),
+            Some("shell:AppsFolder\\NousResearch.HermesBundled_newpublisher!HermesBundled".into())
+        );
+        assert!(select_application(uri, &[]).is_none());
+        assert!(select_application(
+            uri,
+            &[app("NousResearchInc.HermesAgentOther", "HermesBundled", 3)]
+        )
+        .is_none());
+        assert!(!identity_matches(
+            "Unrelated",
+            "NousResearchInc.HermesAgent"
+        ));
     }
 
     #[test]

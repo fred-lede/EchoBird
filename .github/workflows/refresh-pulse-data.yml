@@ -1,0 +1,63 @@
+name: Refresh Pulse Data
+
+on:
+  schedule:
+    - cron: '15 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-pulse-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install feed dependencies
+        run: python -m pip install --quiet requests feedparser
+
+      - name: Refresh Chinese feed
+        run: |
+          set -euo pipefail
+          mkdir -p docs/pulse
+          curl -fsSL --retry 3 --retry-delay 5 \
+            https://raw.githubusercontent.com/SuYxh/ai-news-aggregator/main/data/latest-7d.json \
+            -o docs/pulse/latest-7d.json
+          python scripts/filter_pulse.py docs/pulse/latest-7d.json
+
+      - name: Build global feed
+        run: |
+          python scripts/build_en_pulse.py
+          python scripts/filter_pulse.py docs/pulse/latest-7d-en.json
+
+      - name: Validate feeds
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for path in Path('docs/pulse').glob('latest-7d*.json'):
+              feed = json.loads(path.read_text(encoding='utf-8'))
+              assert feed['items'] and feed['total_items'] == len(feed['items']), path
+              print(f"{path}: {feed['total_items']} items")
+          PY
+
+      - name: Commit updated feeds
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/pulse/latest-7d.json docs/pulse/latest-7d-en.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore(pulse): refresh news feeds"
+          git push

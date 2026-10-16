@@ -23,6 +23,7 @@ vi.mock('../../api/tauri', () => ({
   setSmartRouterCandidates: vi.fn(),
   removeSmartRouterCandidate: vi.fn(),
   getFreeModelDirectory: vi.fn(),
+  getCachedFreeModelDirectory: vi.fn().mockResolvedValue(null),
 }));
 
 describe('Super Router static preview', () => {

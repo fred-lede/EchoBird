@@ -4,8 +4,14 @@
 mod aider;
 mod claudecode;
 mod claudedesktop;
+mod claudescience;
+
+pub(crate) fn claude_science_restart_file() -> std::path::PathBuf {
+    echobird_dir().join(claudescience::RESTART_FILE)
+}
 pub(crate) mod cline;
 mod codex;
+mod copilot;
 pub(crate) mod dsh;
 mod generic;
 mod grok;
@@ -14,19 +20,22 @@ mod kimicode;
 mod mimocode;
 mod mimodesktop;
 pub(crate) mod minimaxcode;
+pub(crate) mod musecode;
 mod omp;
 mod openclaw;
 mod opencode;
 mod openscience;
 mod pi;
 mod proxy_ports;
+mod qoder;
 mod qwencode;
 mod relay;
 mod vibe_trading;
+pub(crate) mod vscode;
 mod workbuddy;
 mod zcode;
 
-use crate::services::{codex_accounts, tool_manager};
+use crate::services::{codex_accounts, copilot_accounts, tool_manager};
 use aider::{apply_aider, read_aider};
 use claudecode::{
     apply_claudecode, normalize_model_info_for_tool, read_claudecode,
@@ -36,11 +45,19 @@ pub(crate) use claudedesktop::claude_desktop_uses_third_party_mode;
 use claudedesktop::{apply_claudedesktop, read_claudedesktop, restore_claudedesktop_to_official};
 pub(crate) use codex::{apply_codex, apply_codex_at};
 use codex::{read_codex, restore_codex_to_official};
+use copilot::{
+    apply_copilot, apply_copilot_desktop, read_copilot, read_copilot_desktop,
+    restore_copilot_desktop_to_official, restore_copilot_to_official,
+};
 use dsh::{apply_dsh, read_dsh, restore_dsh_to_official};
 use generic::{apply_generic_json, read_generic_json};
 use grok::{apply_grok, read_grok, restore_grok_to_official};
+pub(crate) use kilo::kilo_apply_account_selection;
 pub use kilo::kilo_echobird_model;
-use kilo::{apply_kilo, read_kilo, restore_kilo_to_official};
+use kilo::{
+    apply_kilo, apply_kilo_desktop, read_kilo, read_kilo_desktop, restore_kilo_desktop_to_official,
+    restore_kilo_to_official,
+};
 use kimicode::{
     apply_kimicode, apply_kimidesktop, read_kimicode, read_kimidesktop,
     restore_kimicode_to_official, restore_kimidesktop_to_official,
@@ -62,6 +79,20 @@ use zcode::{apply_zcode, read_zcode, restore_zcode_to_official};
 
 pub(crate) fn restore_zcode_account_config(dir: &std::path::Path) -> ApplyResult {
     zcode::restore_zcode_to_official_at(dir)
+}
+
+pub(crate) fn restore_copilot_account_config() -> ApplyResult {
+    restore_copilot_to_official()
+}
+
+pub(crate) async fn restore_copilot_desktop_account_config_with_bridge(
+    bridge: &mut copilot_accounts::desktop::Desktop,
+) -> ApplyResult {
+    copilot::restore_copilot_desktop_with_bridge(bridge).await
+}
+
+pub(crate) fn copilot_config_dir() -> PathBuf {
+    copilot::config_dir()
 }
 
 /// Model info to apply to a tool
@@ -276,6 +307,7 @@ pub async fn apply_model_to_tool(tool_id: &str, model_info: ModelInfo) -> ApplyR
 
     // Dispatch custom tools to their own handlers
     match tool_id {
+        "vscode" => return vscode::apply(&model_info),
         // OpenClaw: direct write to ~/.openclaw/openclaw.json (no patch needed since v2026.3.13)
         "openclaw" => return apply_openclaw(&model_info),
 
@@ -289,14 +321,19 @@ pub async fn apply_model_to_tool(tool_id: &str, model_info: ModelInfo) -> ApplyR
         "mimocode" => return apply_mimocode(&model_info),
         "mimodesktop" => return mimodesktop::apply(&model_info),
         "minimaxcode" | "minimaxdesktop" => return minimaxcode::apply(&model_info),
+        "musecode" => return musecode::apply(&model_info),
         "cline" | "clinedesktop" => {
             return cline::apply(&model_info, tool_id == "clinedesktop").await
         }
+        "qoder" | "qodercn" => return qoder::apply(tool_id, &model_info).await,
         "kimidesktop" => return apply_kimidesktop(&model_info),
 
         // Kilo Code (Kilo fork of OpenCode): same provider schema,
         // own config at ~/.config/kilo/kilo.json.
         "kilo" => return apply_kilo(&model_info),
+        "kilodesktop" => return apply_kilo_desktop(&model_info),
+        "copilot" => return apply_copilot(&model_info),
+        "copilotdesktop" => return apply_copilot_desktop(&model_info).await,
 
         // OpenScience (open-source Claude Science alt): models.dev provider
         // schema, dual-protocol (npm @ai-sdk/anthropic | @ai-sdk/openai-compatible),
@@ -312,6 +349,7 @@ pub async fn apply_model_to_tool(tool_id: &str, model_info: ModelInfo) -> ApplyR
 
         // Claude Desktop 3P profile (Anthropic-native providers only)
         "claudedesktop" => return apply_claudedesktop(&model_info),
+        "claudescience" => return claudescience::apply(&model_info),
 
         // Claude Code — same model-id-rewrite proxy path as Claude Desktop,
         // but writes ~/.claude/settings.json env vars + its own relay file.
@@ -361,6 +399,12 @@ pub async fn apply_model_to_tool(tool_id: &str, model_info: ModelInfo) -> ApplyR
 /// the tool itself regenerates a fresh, vendor-default config on next launch.
 /// Used by the App Desktop "restore to official" flow.
 pub async fn restore_tool_to_official(tool_id: &str) -> ApplyResult {
+    if tool_id == "claudescience" {
+        return claudescience::restore();
+    }
+    if tool_id == "vscode" {
+        return vscode::restore();
+    }
     if matches!(tool_id, "cline" | "clinedesktop") {
         return ApplyResult {
             success: false,
@@ -403,11 +447,23 @@ pub async fn restore_tool_to_official(tool_id: &str) -> ApplyResult {
     if matches!(tool_id, "minimaxcode" | "minimaxdesktop") {
         return minimaxcode::restore();
     }
+    if tool_id == "musecode" {
+        return musecode::restore();
+    }
     if tool_id == "kimidesktop" {
         return restore_kimidesktop_to_official();
     }
     if tool_id == "kilo" {
         return restore_kilo_to_official();
+    }
+    if tool_id == "kilodesktop" {
+        return restore_kilo_desktop_to_official();
+    }
+    if tool_id == "copilot" {
+        return restore_copilot_to_official();
+    }
+    if tool_id == "copilotdesktop" {
+        return restore_copilot_desktop_to_official().await;
     }
     if tool_id == "zcode" {
         return restore_zcode_to_official();
@@ -473,19 +529,25 @@ pub async fn restore_tool_to_official(tool_id: &str) -> ApplyResult {
 
 pub async fn get_tool_model_info(tool_id: &str) -> Option<ModelInfo> {
     match tool_id {
+        "vscode" => return vscode::read(),
         "openclaw" => return read_openclaw(),
         "opencode" | "opencodedesktop" => return read_opencode(),
         "mimocode" => return read_mimocode(),
         "mimodesktop" => return mimodesktop::read(),
         "minimaxcode" | "minimaxdesktop" => return minimaxcode::read(),
+        "musecode" => return musecode::read(),
         "cline" | "clinedesktop" => return cline::read(tool_id == "clinedesktop"),
         "kimidesktop" => return read_kimidesktop(),
         "kilo" => return read_kilo(),
+        "kilodesktop" => return read_kilo_desktop(),
+        "copilot" => return read_copilot(),
+        "copilotdesktop" => return read_copilot_desktop().await,
         "openscience" => return read_openscience(),
         "dsh" => return read_dsh(),
         "zcode" => return read_zcode(),
         "codex" | "chatgptdesktop" => return read_codex(),
         "claudedesktop" => return read_claudedesktop(),
+        "claudescience" => return claudescience::read(),
         "claudecode" => return read_claudecode(),
         "aider" => return read_aider(),
         "grok" => return read_grok(),

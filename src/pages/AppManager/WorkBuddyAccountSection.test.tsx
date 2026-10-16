@@ -113,7 +113,7 @@ describe('WorkBuddy account card', () => {
   it('preserves unknown base and hides unknown reward details', () => {
     const markup = renderAccount({ remaining: null, rewardRemaining: null, baseRemaining: null });
     expect(markup).toContain('agent.baseCredits');
-    expect(markup).toContain('>—</span>');
+    expect(markup).toContain('model.noUsageData');
     expect(markup).not.toContain('agent.rewardCredits');
   });
   it.each([

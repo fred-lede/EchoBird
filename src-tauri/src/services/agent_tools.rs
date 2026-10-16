@@ -7,6 +7,11 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::time::timeout;
 
+use super::agent_context;
+use super::agent_history::HistoryStore;
+use super::agent_memory::{MemoryRecord, MemoryStore};
+use super::agent_output_store::{OutputRecord, OutputStore};
+use super::agent_output_summary;
 use crate::commands::ssh_commands::SSHPool;
 
 // ── Types ──
@@ -114,7 +119,9 @@ pub fn get_tool_definitions() -> Vec<super::llm_client::ToolDef> {
         super::llm_client::ToolDef {
             name: "shell_exec".into(),
             description: "Execute a shell command on the local machine or a remote SSH server. \
-                Use server_id to target a specific SSH server, or omit for local execution.".into(),
+                Use server_id to target a specific SSH server, or omit for local execution. \
+                Long results include an output_id; use tool_output_read to inspect the original \
+                output before rerunning a command just to see missing details.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -129,6 +136,36 @@ pub fn get_tool_definitions() -> Vec<super::llm_client::ToolDef> {
                 },
                 "required": ["command"]
             }),
+        },
+        super::llm_client::ToolDef {
+            name: "tool_output_read".into(),
+            description: "Read saved shell output from this conversation without executing the \
+                command again. This reads EchoBird's local artifact even for SSH results; it \
+                does not connect to or run commands on a server. Output can expire when the \
+                conversation is cleared or the bounded archive is pruned. Follow next_offset \
+                for additional UTF-8 pages.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "output_id": { "type": "string", "description": "Saved output_id from shell_exec" },
+                    "offset": { "type": "integer", "minimum": 0, "description": "Byte offset, default 0" },
+                    "max_bytes": { "type": "integer", "minimum": 4, "maximum": 8000, "description": "Page size, default 6000" }
+                },
+                "required": ["output_id"]
+            }),
+        },
+        super::llm_client::ToolDef {
+            name: "conversation_history_read".into(),
+            description: "Read original messages from this conversation when older details were summarized or omitted. Byte paging; follow next_offset. Reads local saved history, including SSH results, without executing commands or connecting to servers. Private reasoning is excluded.".into(),
+            parameters: json!({"type":"object","properties":{
+                "offset":{"type":"integer","minimum":0},
+                "max_bytes":{"type":"integer","minimum":4,"maximum":8000}
+            }}),
+        },
+        super::llm_client::ToolDef {
+            name: "memory_search".into(),
+            description: "Recall relevant saved preferences and historical notes for the current machine/server. Notes are evidence hints, not current-state verification or fresh authorization.".into(),
+            parameters: json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
         },
         super::llm_client::ToolDef {
             name: "file_read".into(),
@@ -338,6 +375,7 @@ pub async fn execute_tool(
     args_json: &str,
     ssh_pool: &SSHPool,
     session_server_ids: &[String],
+    output_scope: &str,
 ) -> ToolResult {
     let args: Value = match serde_json::from_str(args_json) {
         Ok(v) => v,
@@ -385,8 +423,26 @@ pub async fn execute_tool(
                 };
             }
             let server_id = resolve_server_id(raw_sid);
-            exec_shell(command, &server_id, ssh_pool).await
+            match capture_shell(command, &server_id, ssh_pool).await {
+                Ok(record) => saved_shell_result(record, output_scope, &OutputStore::standard()),
+                Err(result) => result,
+            }
         }
+        "tool_output_read" => read_tool_output(&args, output_scope, &OutputStore::standard()),
+        "conversation_history_read" => {
+            let read = || -> Result<String, String> {
+                let offset = tool_integer(&args, "offset", 0)?;
+                let max_bytes = tool_integer(&args, "max_bytes", 6000)?;
+                let snapshot = HistoryStore::standard().load(output_scope)?;
+                agent_context::history_page(&snapshot, offset, max_bytes)
+            };
+            string_tool_result(read())
+        }
+        "memory_search" => search_memories(
+            &args,
+            memory_target(session_server_ids),
+            &MemoryStore::standard(),
+        ),
         "file_read" => {
             let path = args["path"].as_str().unwrap_or("");
             let raw_sid = args["server_id"].as_str();
@@ -519,6 +575,140 @@ pub async fn execute_tool(
 
 // ── Shell Execution ──
 
+pub(crate) fn memory_target(server_ids: &[String]) -> &str {
+    server_ids
+        .iter()
+        .find(|id| !id.is_empty() && id.as_str() != "local")
+        .map_or("local", String::as_str)
+}
+
+fn string_tool_result(result: Result<String, String>) -> ToolResult {
+    match result {
+        Ok(output) => ToolResult {
+            success: true,
+            output,
+        },
+        Err(output) => ToolResult {
+            success: false,
+            output,
+        },
+    }
+}
+
+fn tool_integer(args: &Value, name: &str, default: usize) -> Result<usize, String> {
+    match args.get(name) {
+        None => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| format!("{name} must be a non-negative integer")),
+    }
+}
+
+pub(crate) fn memory_records_json(mut records: Vec<MemoryRecord>) -> Result<String, String> {
+    loop {
+        let json = serde_json::to_string(&records).map_err(|error| error.to_string())?;
+        if json.len() <= MAX_OUTPUT_BYTES {
+            return Ok(json);
+        }
+        records.pop();
+    }
+}
+
+fn search_memories(args: &Value, target: &str, store: &MemoryStore) -> ToolResult {
+    let execute = || -> Result<String, String> {
+        let text_arg = |name: &str| args[name].as_str().ok_or_else(|| format!("Missing {name}"));
+        let notes = store.recall(target, text_arg("query")?)?;
+        memory_records_json(notes)
+    };
+    string_tool_result(execute())
+}
+
+fn saved_shell_result(record: OutputRecord, scope: &str, store: &OutputStore) -> ToolResult {
+    // Preserve full streams before any filtering. Archive failure does not change
+    // the command's exit status or promise an output reference that cannot be read.
+    let output_id = match store.store(scope, &record) {
+        Ok(id) => Some(id),
+        Err(error) => {
+            log::warn!("[AgentTools] Failed to save shell output: {error}");
+            None
+        }
+    };
+    ToolResult {
+        success: record.success,
+        output: agent_output_summary::summarize(&record, output_id.as_deref()),
+    }
+}
+
+fn read_tool_output(args: &Value, scope: &str, store: &OutputStore) -> ToolResult {
+    let read = || -> Result<String, String> {
+        let id = args["output_id"]
+            .as_str()
+            .ok_or("output_id must be a saved output ID")?;
+        let integer = |name: &str, default: usize| -> Result<usize, String> {
+            match args.get(name) {
+                None => Ok(default),
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .ok_or_else(|| format!("{name} must be a non-negative integer")),
+            }
+        };
+        let offset = integer("offset", 0)?;
+        let max_bytes = integer("max_bytes", 6000)?;
+        if !(4..=MAX_OUTPUT_BYTES).contains(&max_bytes) {
+            return Err("max_bytes must be between 4 and 8000".into());
+        }
+        store.read(scope, id, offset, max_bytes)
+    };
+    match read() {
+        Ok(output) => ToolResult {
+            success: true,
+            output,
+        },
+        Err(error) => ToolResult {
+            success: false,
+            output: error,
+        },
+    }
+}
+
+async fn capture_shell(
+    command: &str,
+    server_id: &str,
+    ssh_pool: &SSHPool,
+) -> Result<OutputRecord, ToolResult> {
+    if server_id == "local" || server_id.is_empty() {
+        capture_local_shell(command).await
+    } else {
+        capture_ssh_shell(command, server_id, ssh_pool).await
+    }
+}
+
+// Internal probes/file transfers still receive the existing unfiltered tail.
+fn legacy_shell_result(record: OutputRecord) -> ToolResult {
+    let mut output = record.combined();
+    if output.len() > MAX_OUTPUT_BYTES {
+        let start = ceil_char_boundary(&output, output.len() - MAX_OUTPUT_BYTES);
+        output = format!(
+            "... [output truncated, showing last {}KB]\n{}",
+            MAX_OUTPUT_BYTES / 1024,
+            &output[start..]
+        );
+    }
+    ToolResult {
+        success: record.success,
+        output: if output.is_empty() {
+            format!(
+                "Command completed (exit code: {})",
+                record.exit_code.unwrap_or(-1)
+            )
+        } else {
+            output
+        },
+    }
+}
+
 pub async fn exec_shell(command: &str, server_id: &str, ssh_pool: &SSHPool) -> ToolResult {
     if server_id == "local" || server_id.is_empty() {
         exec_local_shell(command).await
@@ -528,6 +718,13 @@ pub async fn exec_shell(command: &str, server_id: &str, ssh_pool: &SSHPool) -> T
 }
 
 async fn exec_local_shell(command: &str) -> ToolResult {
+    match capture_local_shell(command).await {
+        Ok(record) => legacy_shell_result(record),
+        Err(result) => result,
+    }
+}
+
+async fn capture_local_shell(command: &str) -> Result<OutputRecord, ToolResult> {
     log::info!(
         "[AgentTools] Local exec: {}",
         &command[..floor_char_boundary(command, 200)]
@@ -550,10 +747,10 @@ async fn exec_local_shell(command: &str) -> ToolResult {
                 "[AgentTools] BLOCKED dangerous command: {}",
                 &command[..floor_char_boundary(command, 200)]
             );
-            return ToolResult {
+            return Err(ToolResult {
                 success: false,
                 output: format!("Command blocked: contains '{}'. This operation could damage Echobird or user data.", pattern),
-            };
+            });
         }
     }
     let timeout_secs = get_exec_timeout(command);
@@ -608,10 +805,10 @@ async fn exec_local_shell(command: &str) -> ToolResult {
     let child = match spawn_result {
         Ok(c) => c,
         Err(e) => {
-            return ToolResult {
+            return Err(ToolResult {
                 success: false,
                 output: format!("Failed to execute command: {}", e),
-            };
+            });
         }
     };
     // Capture the PID before wait_with_output consumes the Child handle —
@@ -619,46 +816,18 @@ async fn exec_local_shell(command: &str) -> ToolResult {
     let pid = child.id();
 
     match timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let mut combined = String::new();
-            if !stdout.is_empty() {
-                combined.push_str(&stdout);
-            }
-            if !stderr.is_empty() {
-                if !combined.is_empty() {
-                    combined.push_str("\n--- stderr ---\n");
-                }
-                combined.push_str(&stderr);
-            }
-            // Truncate if too long — keep the TAIL (end of output has the result)
-            if combined.len() > MAX_OUTPUT_BYTES {
-                let start = combined.len() - MAX_OUTPUT_BYTES;
-                // Advance to next UTF-8 boundary
-                let start = ceil_char_boundary(&combined, start);
-                combined = format!(
-                    "... [output truncated, showing last {}KB]\n{}",
-                    MAX_OUTPUT_BYTES / 1024,
-                    &combined[start..]
-                );
-            }
-            ToolResult {
-                success: output.status.success(),
-                output: if combined.is_empty() {
-                    format!(
-                        "Command completed (exit code: {})",
-                        output.status.code().unwrap_or(-1)
-                    )
-                } else {
-                    combined
-                },
-            }
-        }
-        Ok(Err(e)) => ToolResult {
+        Ok(Ok(output)) => Ok(OutputRecord {
+            command: command.into(),
+            target: "local".into(),
+            exit_code: output.status.code().map(i64::from),
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }),
+        Ok(Err(e)) => Err(ToolResult {
             success: false,
             output: format!("Failed to wait for command: {}", e),
-        },
+        }),
         Err(_) => {
             // Timeout elapsed — the future was dropped, but the child and
             // its whole descendant tree are still alive. Kill the tree so a
@@ -667,10 +836,10 @@ async fn exec_local_shell(command: &str) -> ToolResult {
             if let Some(pid) = pid {
                 kill_process_tree(pid);
             }
-            ToolResult {
+            Err(ToolResult {
                 success: false,
                 output: format!("Command timed out after {}s", timeout_secs),
-            }
+            })
         }
     }
 }
@@ -708,6 +877,17 @@ fn kill_process_tree(pid: u32) {
 }
 
 async fn exec_ssh_shell(command: &str, server_id: &str, ssh_pool: &SSHPool) -> ToolResult {
+    match capture_ssh_shell(command, server_id, ssh_pool).await {
+        Ok(record) => legacy_shell_result(record),
+        Err(result) => result,
+    }
+}
+
+async fn capture_ssh_shell(
+    command: &str,
+    server_id: &str,
+    ssh_pool: &SSHPool,
+) -> Result<OutputRecord, ToolResult> {
     log::info!(
         "[AgentTools] SSH exec on {}: {}",
         server_id,
@@ -716,10 +896,10 @@ async fn exec_ssh_shell(command: &str, server_id: &str, ssh_pool: &SSHPool) -> T
 
     // Auto-connect if not in pool
     if let Err(e) = crate::commands::ssh_commands::auto_connect_ssh(ssh_pool, server_id).await {
-        return ToolResult {
+        return Err(ToolResult {
             success: false,
             output: format!("SSH auto-connect failed: {}", e),
-        };
+        });
     }
 
     // Clone the client out of the lock guard before executing.
@@ -731,13 +911,13 @@ async fn exec_ssh_shell(command: &str, server_id: &str, ssh_pool: &SSHPool) -> T
         match connections.get(server_id) {
             Some(c) => c.clone(),
             None => {
-                return ToolResult {
+                return Err(ToolResult {
                     success: false,
                     output: format!(
                         "SSH server '{}' not connected after auto-connect attempt.",
                         server_id
                     ),
-                }
+                })
             }
         }
     }; // lock released here
@@ -745,41 +925,22 @@ async fn exec_ssh_shell(command: &str, server_id: &str, ssh_pool: &SSHPool) -> T
     // Timeout to prevent hanging forever on remote commands
     let timeout_secs = get_exec_timeout(command);
     match timeout(Duration::from_secs(timeout_secs), client.execute(command)).await {
-        Ok(Ok(result)) => {
-            let mut output = result.stdout;
-            if !result.stderr.is_empty() {
-                if !output.is_empty() {
-                    output.push_str("\n--- stderr ---\n");
-                }
-                output.push_str(&result.stderr);
-            }
-            // Truncate if too long — keep the TAIL (end of output has the result)
-            if output.len() > MAX_OUTPUT_BYTES {
-                let start = output.len() - MAX_OUTPUT_BYTES;
-                let start = ceil_char_boundary(&output, start);
-                output = format!(
-                    "... [output truncated, showing last {}KB]\n{}",
-                    MAX_OUTPUT_BYTES / 1024,
-                    &output[start..]
-                );
-            }
-            ToolResult {
-                success: result.exit_status == 0,
-                output: if output.is_empty() {
-                    format!("Command completed (exit code: {})", result.exit_status)
-                } else {
-                    output
-                },
-            }
-        }
-        Ok(Err(e)) => ToolResult {
+        Ok(Ok(result)) => Ok(OutputRecord {
+            command: command.into(),
+            target: server_id.into(),
+            exit_code: Some(i64::from(result.exit_status)),
+            success: result.exit_status == 0,
+            stdout: result.stdout,
+            stderr: result.stderr,
+        }),
+        Ok(Err(e)) => Err(ToolResult {
             success: false,
             output: format!("SSH command failed: {}", e),
-        },
-        Err(_) => ToolResult {
+        }),
+        Err(_) => Err(ToolResult {
             success: false,
-            output: format!("SSH command timed out after {}s", EXEC_TIMEOUT_SECS),
-        },
+            output: format!("SSH command timed out after {}s", timeout_secs),
+        }),
     }
 }
 
@@ -1760,5 +1921,241 @@ async fn exec_download_file(
             success: false,
             output: format!("Failed to write local file '{}': {}", local_path, e),
         },
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+    use crate::services::agent_memory::MemoryScope;
+    use std::path::PathBuf;
+
+    #[test]
+    fn memory_lookup_is_scoped_read_only_and_writes_belong_to_background_capture() {
+        let directory = TestDir::new();
+        let store = MemoryStore::new(directory.0.clone());
+        store
+            .remember(
+                MemoryScope::User,
+                None,
+                "请一直用中文回答",
+                Some("first-chat"),
+            )
+            .unwrap();
+        let target = store
+            .remember(
+                MemoryScope::Target,
+                Some("remote-a"),
+                "OpenClaw 安装路径 E:/Agents/OpenClaw",
+                Some("first-chat"),
+            )
+            .unwrap();
+        let before = store.list().unwrap();
+        let recalled = search_memories(&json!({"query":"OpenClaw 安装"}), "remote-a", &store);
+        assert!(recalled.success && recalled.output.contains(&target.id));
+        let other = search_memories(&json!({"query":"OpenClaw 安装"}), "remote-b", &store);
+        assert!(
+            other.success && !other.output.contains(&target.id) && other.output.contains("中文")
+        );
+        assert!(!search_memories(&json!({}), "remote-a", &store).success);
+        assert_eq!(store.list().unwrap(), before);
+        let tools = get_tool_definitions();
+        assert!(tools.iter().any(|tool| tool.name == "memory_search"));
+        for name in ["memory_save", "memory_update", "memory_forget"] {
+            assert!(!tools.iter().any(|tool| tool.name == name));
+        }
+    }
+
+    #[test]
+    fn memory_payload_includes_metadata_within_tool_byte_budget() {
+        let directory = TestDir::new();
+        let store = MemoryStore::new(directory.0.clone());
+        for index in 0..8 {
+            store
+                .remember(
+                    MemoryScope::User,
+                    None,
+                    &format!("Preference {index}: {}", "\"\n".repeat(800)),
+                    Some("conversation"),
+                )
+                .unwrap();
+        }
+        let output = memory_records_json(store.list().unwrap()).unwrap();
+        assert!(output.len() <= MAX_OUTPUT_BYTES);
+        let records: Vec<MemoryRecord> = serde_json::from_str(&output).unwrap();
+        assert!(!records.is_empty());
+        assert!(records
+            .iter()
+            .all(|record| record.source_conversation_id.as_deref() == Some("conversation")));
+    }
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            let base = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+            Self(base.join(format!("echobird-shell-output-{}", uuid::Uuid::new_v4())))
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn record(success: bool) -> OutputRecord {
+        OutputRecord {
+            command: "cargo test".into(),
+            target: "remote-fixture".into(),
+            exit_code: Some(if success { 0 } else { 7 }),
+            success,
+            stdout: format!(
+                "initial diagnostic\n{}\nfinished",
+                "progress\n".repeat(3000)
+            ),
+            stderr: "error: 编译失败 原因\n".into(),
+        }
+    }
+
+    fn output_id(result: &ToolResult) -> &str {
+        result
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("Output ID: "))
+            .unwrap()
+    }
+
+    fn recover(store: &OutputStore, scope: &str, id: &str) -> String {
+        let mut offset = 0;
+        let mut raw = String::new();
+        loop {
+            let page = read_tool_output(&json!({"output_id": id, "offset": offset}), scope, store);
+            assert!(page.success, "{}", page.output);
+            raw.push_str(page.output.split_once("--- content ---\n").unwrap().1);
+            let next = page
+                .output
+                .lines()
+                .find_map(|line| line.strip_prefix("Next offset: "))
+                .unwrap();
+            if next == "none" {
+                return raw;
+            }
+            let next = next.parse::<usize>().unwrap();
+            assert!(next > offset, "page must advance");
+            offset = next;
+        }
+    }
+
+    #[test]
+    fn summary_preserves_status_and_recall_recovers_both_original_streams() {
+        let directory = TestDir::new();
+        let store = OutputStore::new(directory.0.clone());
+        let original = record(false);
+        let expected = original.combined();
+        let result = saved_shell_result(original, "conversation-a", &store);
+        assert!(!result.success);
+        assert!(result.output.contains("Exit code: 7"));
+        assert!(result.output.contains("编译失败"));
+        assert!(result.output.len() <= MAX_OUTPUT_BYTES);
+        let id = output_id(&result);
+        assert_eq!(recover(&store, "conversation-a", id), expected);
+        assert!(!read_tool_output(&json!({"output_id": id}), "conversation-b", &store).success);
+    }
+
+    #[test]
+    fn archive_failure_keeps_command_status_and_does_not_advertise_fake_recall() {
+        let directory = TestDir::new();
+        std::fs::create_dir(&directory.0).unwrap();
+        let blocked = directory.0.join("not-a-directory");
+        std::fs::write(&blocked, "existing file").unwrap();
+        let store = OutputStore::new(blocked);
+        for success in [true, false] {
+            let result = saved_shell_result(record(success), "conversation", &store);
+            assert_eq!(result.success, success);
+            assert!(result.output.contains("archive unavailable"));
+            assert!(!result.output.contains("Output ID:"));
+            assert!(result.output.contains("编译失败"));
+        }
+    }
+
+    #[test]
+    fn internal_helpers_keep_unfiltered_legacy_tail_and_empty_result_behavior() {
+        let mut original = record(false);
+        let combined = original.combined();
+        let result = legacy_shell_result(original.clone());
+        assert!(!result.success);
+        assert!(result.output.ends_with(
+            &combined[ceil_char_boundary(&combined, combined.len() - MAX_OUTPUT_BYTES)..]
+        ));
+        assert!(!result.output.contains("Output ID:"));
+        original.stdout = "raw probe output".into();
+        original.stderr = "raw stderr".into();
+        assert_eq!(
+            legacy_shell_result(original.clone()).output,
+            "raw probe output\n--- stderr ---\nraw stderr"
+        );
+        original.stdout.clear();
+        original.stderr.clear();
+        assert_eq!(
+            legacy_shell_result(original).output,
+            "Command completed (exit code: 7)"
+        );
+    }
+
+    #[test]
+    fn recall_rejects_invalid_arguments_without_creating_storage() {
+        let directory = TestDir::new();
+        let store = OutputStore::new(directory.0.clone());
+        let id = uuid::Uuid::new_v4().to_string();
+        for args in [
+            json!({}),
+            json!({"output_id":"../secret"}),
+            json!({"output_id":id,"offset":-1}),
+            json!({"output_id":id,"offset":1.5}),
+            json!({"output_id":id,"max_bytes":0}),
+            json!({"output_id":id,"max_bytes":8001}),
+            json!({"output_id":id}),
+        ] {
+            assert!(!read_tool_output(&args, "conversation", &store).success);
+        }
+        assert!(!directory.0.exists());
+    }
+
+    #[tokio::test]
+    async fn explicit_recall_does_not_connect_to_selected_remote_server() {
+        let pool = crate::commands::ssh_commands::create_ssh_pool();
+        let result = execute_tool(
+            "tool_output_read",
+            r#"{"output_id":"../not-an-artifact"}"#,
+            &pool,
+            &["remote-not-connected".into()],
+            "isolated-fixture-conversation",
+        )
+        .await;
+        assert!(!result.success);
+        assert_eq!(result.output, "Invalid saved output ID");
+        assert!(pool.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_execution_captures_complete_streams_and_real_exit_before_saving() {
+        #[cfg(windows)]
+        let command = "[Console]::Out.Write(('x' * 12000)); [Console]::Error.Write('stderr diagnostic'); exit 7";
+        #[cfg(not(windows))]
+        let command = "printf '%12000s' x; printf 'stderr diagnostic' >&2; exit 7";
+        let captured = capture_local_shell(command).await.unwrap();
+        assert!(!captured.success);
+        assert_eq!(captured.exit_code, Some(7));
+        assert_eq!(captured.stdout.len(), 12000);
+        assert_eq!(captured.stderr, "stderr diagnostic");
+        let expected = captured.combined();
+        let directory = TestDir::new();
+        let store = OutputStore::new(directory.0.clone());
+        let result = saved_shell_result(captured, "isolated-local", &store);
+        assert_eq!(
+            recover(&store, "isolated-local", output_id(&result)),
+            expected
+        );
     }
 }

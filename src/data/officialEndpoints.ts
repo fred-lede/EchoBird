@@ -45,6 +45,13 @@ export const OFFICIAL_ENDPOINTS: Record<string, OfficialEndpoint> = {
     protocol: 'anthropic',
     modelId: 'claude-sonnet-4-5',
   },
+  claudescience: {
+    name: 'Anthropic Official',
+    baseUrl: 'https://api.anthropic.com',
+    anthropicUrl: 'https://api.anthropic.com',
+    protocol: 'anthropic',
+    modelId: 'claude-sonnet-4-5',
+  },
   codex: {
     name: 'OpenAI Official',
     baseUrl: 'https://api.openai.com/v1',

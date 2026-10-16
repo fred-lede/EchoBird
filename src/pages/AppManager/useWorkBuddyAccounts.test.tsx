@@ -164,7 +164,7 @@ describe('WorkBuddy account interactions', () => {
     await mount();
     const quota = deferred<api.WorkBuddyAccount>();
     vi.mocked(api.refreshWorkBuddyAccountQuota).mockReturnValueOnce(quota.promise);
-    let refreshing!: Promise<void>;
+    let refreshing!: Promise<unknown>;
     act(() => {
       refreshing = state.refresh(cn);
     });
@@ -228,7 +228,7 @@ describe('WorkBuddy account interactions', () => {
     await mount();
     const result = deferred<api.WorkBuddyAccount>();
     vi.mocked(api.claimWorkBuddyDailyCredits).mockReturnValueOnce(result.promise);
-    let claiming!: Promise<void>;
+    let claiming!: Promise<unknown>;
     act(() => {
       claiming = state.claimDaily(cn);
     });
@@ -261,7 +261,7 @@ describe('WorkBuddy account interactions', () => {
     await mount();
     const result = deferred<api.WorkBuddyAccount>();
     vi.mocked(api.refreshWorkBuddyAccountQuota).mockReturnValueOnce(result.promise);
-    let pending!: Promise<void>;
+    let pending!: Promise<unknown>;
     act(() => {
       pending = state.refresh(cn);
     });
@@ -309,7 +309,7 @@ describe('WorkBuddy account interactions', () => {
         if (fail) throw new Error('accountError.claim');
         return account;
       });
-      let claiming!: Promise<void>;
+      let claiming!: Promise<unknown>;
       act(() => {
         claiming = state.claimDaily(cn);
       });
@@ -330,7 +330,7 @@ describe('WorkBuddy account interactions', () => {
     await mount();
     const result = deferred<api.WorkBuddyAccount>();
     vi.mocked(api.claimWorkBuddyDailyCredits).mockReturnValueOnce(result.promise);
-    let claiming!: Promise<void>;
+    let claiming!: Promise<unknown>;
     act(() => {
       claiming = state.claimDaily(cn);
     });

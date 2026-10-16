@@ -66,10 +66,13 @@ tmp/
 .agent/
 # Local scratch scripts, except the scheduled free-model maintainer.
 scripts/*
+!scripts/build_en_pulse.py
+!scripts/filter_pulse.py
 !scripts/refresh_free_models.py
 !scripts/tests/
 scripts/tests/*
 !scripts/tests/test_refresh_free_models.py
+!scripts/tests/test_filter_pulse.py
 
 # llama-server binaries (downloaded during CI build)
 electron/tools/llama-server/bin/

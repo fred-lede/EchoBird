@@ -10,9 +10,9 @@ pub mod minimax;
 pub mod novita;
 pub mod opencode;
 pub mod openrouter;
+pub mod relay_subscription;
 pub mod siliconflow;
 pub mod stepfun;
-pub mod sub2api;
 pub mod volcengine;
 pub mod zenmux;
 pub mod zhipu;
@@ -184,7 +184,7 @@ pub enum Provider {
     StepFun(stepfun::StepFunProvider),
     ZenMux(zenmux::ZenMuxProvider),
     Zhipu(zhipu::ZhipuProvider),
-    Sub2Api(sub2api::Sub2ApiProvider),
+    RelaySubscription(relay_subscription::RelaySubscriptionProvider),
     Volcengine(volcengine::VolcengineProvider),
 }
 
@@ -201,7 +201,7 @@ impl Provider {
             Provider::StepFun(p) => p.query_usage(api_key, base_url).await,
             Provider::ZenMux(p) => p.query_usage(api_key, base_url).await,
             Provider::Zhipu(p) => p.query_usage(api_key, base_url).await,
-            Provider::Sub2Api(p) => p.query_usage(api_key, base_url).await,
+            Provider::RelaySubscription(p) => p.query_usage(api_key, base_url).await,
             Provider::Volcengine(p) => p.query_usage(api_key, base_url).await,
         }
     }
@@ -244,8 +244,10 @@ pub fn detect_provider(base_url: &str) -> Option<Provider> {
     if volcengine::VolcengineProvider.can_handle(&url) {
         return Some(Provider::Volcengine(volcengine::VolcengineProvider));
     }
-    if sub2api::Sub2ApiProvider.can_handle(&url) {
-        return Some(Provider::Sub2Api(sub2api::Sub2ApiProvider));
+    if relay_subscription::RelaySubscriptionProvider.can_handle(&url) {
+        return Some(Provider::RelaySubscription(
+            relay_subscription::RelaySubscriptionProvider,
+        ));
     }
 
     None
@@ -350,7 +352,7 @@ mod tests {
         ] {
             assert!(!matches!(
                 detect_provider(&format!("https://{host}/v1")),
-                Some(Provider::Sub2Api(_))
+                Some(Provider::RelaySubscription(_))
             ));
             for base in [
                 format!("https://{host}.relay.example/v1"),
@@ -359,7 +361,10 @@ mod tests {
                 format!("http://{host}/v1"),
                 format!("https://user@{host}/v1"),
             ] {
-                assert!(matches!(detect_provider(&base), Some(Provider::Sub2Api(_))));
+                assert!(matches!(
+                    detect_provider(&base),
+                    Some(Provider::RelaySubscription(_))
+                ));
             }
         }
     }

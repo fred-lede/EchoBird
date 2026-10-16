@@ -50,10 +50,9 @@ describe.each(['grokbot', 'cursor'] as const)('%s account controls', (tool) => {
     expect(renderer.root.findByProps({ role: 'radio' }).props['aria-checked']).toBe(true);
     expect(
       renderer.root.findAllByType('span').filter((node) => node.children.includes('—'))
-    ).toHaveLength(2);
-    expect(
-      renderer.root.findByProps({ role: 'progressbar' }).props['aria-valuenow']
-    ).toBeUndefined();
+    ).toHaveLength(1);
+    expect(renderer.root.findAllByProps({ role: 'progressbar' })).toHaveLength(0);
+    expect(markup).toContain('model.noUsageData');
     expect(markup).toContain('agent.refreshAccount');
     expect(markup).not.toContain('title=');
     expect(markup).not.toContain('cursor-');

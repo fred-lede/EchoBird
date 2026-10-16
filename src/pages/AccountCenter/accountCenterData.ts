@@ -1,15 +1,29 @@
 import type { AppManagerContextType } from '../AppManager/context';
 import type { ManagedAccount } from '../AppManager/useManagedAccounts';
-import type { AntigravityQuota, WorkBuddyAccount } from '../../api/tauri';
+import type { AntigravityQuota, TraeAccount, WorkBuddyAccount } from '../../api/tauri';
 import type { TKey } from '../../i18n';
 import { codexPlanLabel } from '../AppManager/codexPlanLabel';
-import { isFreePlan } from '../AppManager/accountPlanLabel';
+import { isFreePlan, minimaxPlanLabel, qoderPlanLabel } from '../AppManager/accountPlanLabel';
+import {
+  MINIMAX_REWARD_CACHE_SECONDS,
+  minimaxCreditBuckets,
+  minimaxRewardStatus,
+} from '../AppManager/minimaxAccountDisplay';
+import {
+  qoderExpiry,
+  qoderQuotaLabel,
+  qoderRewardStatus,
+  qoderSubscriptionExpiry,
+} from '../AppManager/qoderAccountDisplay';
+import { traeClaimedToday, traeClaimUnavailable } from '../AppManager/traeDailyCredits';
+import { clineBalanceLabel } from '../AppManager/clineAccountDisplay';
 
 export interface AccountMetric {
   label: string;
   value: string;
   percent?: number | null;
   resetAt?: number | null;
+  resetLabel?: string;
   showProgress?: boolean;
 }
 
@@ -21,10 +35,15 @@ export interface AccountCardData {
   subscriptionEndAt?: number | null;
   metrics: AccountMetric[];
   refreshing: boolean;
+  pending?: boolean;
   authorizationFailed: boolean;
   refresh: (onError?: (error: unknown) => void) => Promise<void>;
-  claim?: () => Promise<void>;
+  claim?: () => Promise<unknown>;
+  claimDisabled?: boolean;
   dailyClaimedAt?: number | null;
+  dailyClaimed?: boolean;
+  claimStatusExpiresAt?: number;
+  showUnclaimed?: boolean;
   remove: () => void;
 }
 
@@ -36,6 +55,9 @@ export interface AccountProvider {
   installed: boolean;
   busy: boolean;
   loading: boolean;
+  loaded?: boolean;
+  readFailed?: boolean;
+  mutationRevision?: number;
   remainingSeconds: number;
   waitingLabel?: string;
   add: () => void;
@@ -47,6 +69,9 @@ interface AccountGroup<A> {
   accounts: A[];
   busy: boolean;
   loading: boolean;
+  loaded?: boolean;
+  readFailed?: boolean;
+  mutationRevision?: number;
   remainingSeconds: number;
   awaitingClientExit?: boolean;
   refreshing: Set<string>;
@@ -57,7 +82,7 @@ interface AccountGroup<A> {
     account: A,
     operation?: (account: A) => Promise<A>,
     onError?: (error: unknown) => void
-  ) => Promise<void>;
+  ) => Promise<unknown>;
   remove: (account: A) => Promise<void>;
 }
 
@@ -87,20 +112,21 @@ export function accountCenterProviders(
       .reduce<
         AntigravityQuota | undefined
       >((lowest, q) => (!lowest || q.remainingPercent < lowest.remainingPercent ? q : lowest), undefined);
-  const workBuddyMetrics = (account: WorkBuddyAccount): AccountMetric[] => {
+  const credits = (
+    label: string,
+    remaining?: number | null,
+    total?: number | null,
+    resetAt?: number | null,
+    currency?: string | null
+  ): AccountMetric => ({
+    label,
+    value: remaining != null && currency === 'USD' ? `$${number(remaining)}` : number(remaining),
+    resetAt,
+    percent:
+      remaining != null && total != null && total > 0 ? (remaining / total) * 100 : undefined,
+  });
+  const creditMetrics = (account: WorkBuddyAccount | TraeAccount): AccountMetric[] => {
     const metrics: AccountMetric[] = [];
-    const credits = (
-      label: string,
-      remaining?: number | null,
-      total?: number | null,
-      resetAt?: number | null
-    ) => ({
-      label,
-      value: number(remaining),
-      resetAt,
-      percent:
-        remaining != null && total != null && total > 0 ? (remaining / total) * 100 : undefined,
-    });
     if (account.baseRemaining != null)
       metrics.push(
         credits(
@@ -128,7 +154,17 @@ export function accountCenterProviders(
       account: A
     ) => Pick<
       AccountCardData,
-      'identity' | 'detail' | 'plan' | 'metrics' | 'subscriptionEndAt' | 'claim' | 'dailyClaimedAt'
+      | 'identity'
+      | 'detail'
+      | 'plan'
+      | 'metrics'
+      | 'subscriptionEndAt'
+      | 'claim'
+      | 'claimDisabled'
+      | 'dailyClaimedAt'
+      | 'dailyClaimed'
+      | 'claimStatusExpiresAt'
+      | 'showUnclaimed'
     >
   ): AccountProvider => ({
     id,
@@ -139,6 +175,9 @@ export function accountCenterProviders(
     installed: context.detectedTools.some((tool) => toolIds.includes(tool.id) && tool.installed),
     busy: group.busy,
     loading: group.loading,
+    loaded: group.loaded,
+    readFailed: group.readFailed,
+    mutationRevision: group.mutationRevision,
     remainingSeconds: group.remainingSeconds,
     waitingLabel:
       id === 'cue' && group.busy
@@ -163,6 +202,9 @@ export function accountCenterProviders(
         subscriptionEndAt:
           free && summary.subscriptionEndAt == null ? undefined : summary.subscriptionEndAt,
         metrics:
+          id !== 'trae' &&
+          id !== 'traecn' &&
+          id !== 'kiro' &&
           free &&
           summary.metrics.every(
             (metric) => metric.value === '—' && metric.percent == null && metric.resetAt == null
@@ -171,7 +213,9 @@ export function accountCenterProviders(
             : summary.metrics,
         refreshing: group.refreshing.has(account.id),
         authorizationFailed: group.authorizationFailedIds.has(account.id),
-        refresh: (onError) => group.refresh(account, undefined, onError),
+        refresh: async (onError) => {
+          await group.refresh(account, undefined, onError);
+        },
         remove: () => void group.remove(account),
       };
     }),
@@ -186,6 +230,9 @@ export function accountCenterProviders(
         accounts: context.codexAccounts,
         busy: context.isAddingCodexAccount,
         loading: context.isLoadingCodexAccounts,
+        loaded: context.codexAccountsLoaded,
+        readFailed: context.codexAccountsReadFailed,
+        mutationRevision: context.codexAccountsMutationRevision,
         remainingSeconds: context.codexOAuthRemainingSeconds,
         refreshing: context.refreshingCodexAccountIds,
         authorizationFailedIds: context.codexAuthorizationFailedIds,
@@ -279,7 +326,7 @@ export function accountCenterProviders(
         (account) => ({
           identity: account.name,
           plan: account.plan,
-          metrics: workBuddyMetrics(account),
+          metrics: creditMetrics(account),
           ...(edition === 'workbuddy'
             ? {
                 claim: () => context.workBuddyAccountGroups.workbuddy.claimDaily(account),
@@ -287,6 +334,91 @@ export function accountCenterProviders(
               }
             : {}),
         })
+      )
+    ),
+    provider(
+      'kiro',
+      'Kiro',
+      '/icons/tools/kirocrew.svg',
+      ['kirocrew', 'kirocli'],
+      context.kiroAccounts,
+      (account) => ({
+        identity: account.name,
+        plan: account.plan,
+        metrics: account.quota.length
+          ? account.quota.map((quota) =>
+              credits(
+                t(
+                  quota.label === 'credits'
+                    ? 'agent.baseCredits'
+                    : quota.label === 'trial' || quota.label === 'bonus'
+                      ? 'agent.rewardCredits'
+                      : 'agent.credits'
+                ),
+                quota.remaining,
+                quota.total,
+                quota.resetAt
+              )
+            )
+          : [credits(t('agent.credits'), undefined, undefined)],
+      })
+    ),
+    ...(['trae', 'traecn'] as const).map((edition) =>
+      provider(
+        edition,
+        edition === 'trae' ? 'TRAE' : 'TRAE CN',
+        `/icons/tools/${edition}.svg`,
+        [edition],
+        context.traeAccountGroups[edition],
+        (account) => {
+          const metrics =
+            edition === 'traecn'
+              ? creditMetrics(account)
+              : [
+                  credits(
+                    t('accountCenter.quota'),
+                    account.remaining,
+                    account.total,
+                    account.expiresAt,
+                    account.currency
+                  ),
+                ];
+          if (edition === 'traecn') {
+            for (const metric of metrics) {
+              if (
+                metric.label === t('agent.baseCredits') &&
+                account.baseRemaining === 0 &&
+                account.baseTotal === 0
+              )
+                metric.percent = 0;
+              if (metric.label === t('agent.rewardCredits') && account.rewardNextExpiryAt != null) {
+                metric.resetAt = account.rewardNextExpiryAt;
+                metric.resetLabel = t('agent.rewardCreditsNextExpiry');
+              }
+            }
+          }
+          return {
+            identity: account.name,
+            plan: account.plan,
+            subscriptionEndAt: account.subscriptionEndAt ?? undefined,
+            metrics,
+            ...(edition === 'traecn'
+              ? {
+                  claim: async () => {
+                    const group = context.traeAccountGroups.traecn;
+                    if (traeClaimUnavailable(account, group.accounts)) return;
+                    const updated = await group.claimDaily(account);
+                    return updated != null && traeClaimedToday(updated.deviceClaimedAt);
+                  },
+                  claimDisabled:
+                    context.traeAccountGroups.traecn.refreshing.size > 0 ||
+                    traeClaimUnavailable(account, context.traeAccountGroups.traecn.accounts),
+                  dailyClaimedAt: account.dailyClaimedAt,
+                  showUnclaimed: account.rewardEnabled === true,
+                }
+              : {}),
+          };
+        }
       )
     ),
     provider(
@@ -315,6 +447,80 @@ export function accountCenterProviders(
         plan: account.usage?.plan,
         metrics: [quota(account.usage?.remainingPercent, account.usage?.resetAt)],
       })
+    ),
+    provider(
+      'minimax',
+      'MiniMax',
+      '/icons/tools/minimaxdesktop.svg',
+      ['minimaxcode', 'minimaxdesktop'],
+      context.minimaxAccounts,
+      (account) => ({
+        identity: account.email,
+        detail: t(account.region === 'cn' ? 'agent.minimaxRegionCn' : 'agent.minimaxRegionGlobal'),
+        plan: minimaxPlanLabel(account.plan),
+        subscriptionEndAt: isFreePlan(minimaxPlanLabel(account.plan))
+          ? undefined
+          : account.plan
+            ? (account.subscriptionEndAt ?? null)
+            : undefined,
+        claim: () => context.minimaxAccounts.claimDaily(account),
+        dailyClaimed: minimaxRewardStatus(account) === 'claimed',
+        claimDisabled: minimaxRewardStatus(account) === 'unavailable',
+        claimStatusExpiresAt: account.dailyReward
+          ? account.dailyReward.checkedAt + MINIMAX_REWARD_CACHE_SECONDS
+          : undefined,
+        metrics: [
+          ...(account.quota?.windows ?? []).map((window) =>
+            quota(
+              Math.max(0, Math.min(100, 100 - window.usedPercent)),
+              window.resetsAt,
+              window.name
+            )
+          ),
+          ...(minimaxCreditBuckets(account.quota).length
+            ? minimaxCreditBuckets(account.quota).map((bucket) => ({
+                ...credits(t(bucket.label), bucket.remaining, bucket.total, bucket.expiresAt),
+                showProgress: true,
+              }))
+            : account.quota?.credits != null || !account.quota?.windows.length
+              ? [credits(t('agent.credits'), account.quota?.credits)]
+              : []),
+        ],
+      })
+    ),
+    ...(['qoder', 'qodercn'] as const).map((edition) =>
+      provider(
+        edition,
+        edition === 'qoder' ? 'Qoder' : 'Qoder CN',
+        '/icons/tools/qoder.svg',
+        [edition],
+        context.qoderAccountGroups[edition],
+        (account) => ({
+          identity: account.name || account.email || account.id,
+          plan: qoderPlanLabel(account.plan, account.edition, t),
+          subscriptionEndAt: qoderSubscriptionExpiry(account),
+          claim: () => context.qoderAccountGroups[edition].claimDaily(account),
+          dailyClaimed: qoderRewardStatus(account) === 'claimed',
+          claimDisabled: qoderRewardStatus(account) === 'unavailable',
+          claimStatusExpiresAt: account.dailyReward?.resetAt,
+          metrics: account.quotaWindows.length
+            ? account.quotaWindows.map((window) => ({
+                ...credits(
+                  qoderQuotaLabel(window.name, t),
+                  window.remaining,
+                  window.total,
+                  qoderExpiry(window.expiresAt)
+                ),
+                showProgress: true,
+              }))
+            : [
+                {
+                  ...credits(t('accountCenter.quota'), account.remaining, account.total),
+                  showProgress: true,
+                },
+              ],
+        })
+      )
     ),
     {
       ...provider(
@@ -395,6 +601,75 @@ export function accountCenterProviders(
                 ],
         })
       )
+    ),
+    provider(
+      'kilo',
+      'Kilo',
+      '/icons/tools/kilo.png',
+      ['kilo', 'kilodesktop'],
+      context.kiloAccounts,
+      (account) => ({
+        identity: account.email,
+        plan: account.plan,
+        metrics: [
+          {
+            label: t('model.balance'),
+            value:
+              account.balance == null
+                ? '—'
+                : new Intl.NumberFormat(locale, {
+                    style: 'currency',
+                    currency: 'USD',
+                    maximumFractionDigits: 2,
+                  }).format(account.balance),
+          },
+        ],
+      })
+    ),
+    {
+      ...provider(
+        'cline',
+        'Cline',
+        '/icons/tools/clinedesktop.png',
+        ['cline', 'clinedesktop'],
+        context.clineAccounts,
+        (account) => ({
+          identity: account.email || account.name || account.id,
+          plan: account.plan,
+          subscriptionEndAt: account.subscriptionEndAt ?? undefined,
+          metrics: [
+            { label: t('model.balance'), value: clineBalanceLabel(account.balanceMicros, locale) },
+          ],
+        })
+      ),
+      waitingLabel:
+        context.clineAccounts.busy && context.clineAccounts.login?.userCode
+          ? `${context.clineAccounts.login.userCode} · ${t('agent.waitingForBrowser')}`
+          : undefined,
+    },
+    provider(
+      'copilot',
+      'GitHub Copilot',
+      '/icons/tools/copilot.png',
+      ['copilot', 'copilotdesktop'],
+      context.copilotAccounts,
+      (account) => ({
+        identity: account.login,
+        detail: account.host !== 'github.com' ? account.host : undefined,
+        plan: account.plan,
+        metrics: [
+          {
+            label: t('accountCenter.quota'),
+            value: number(account.remaining),
+            resetAt: account.resetAt,
+            percent:
+              account.remaining != null && account.total != null && account.total > 0
+                ? (account.remaining / account.total) * 100
+                : undefined,
+            showProgress: true,
+          },
+        ],
+      })
     ),
   ];
 }

@@ -8,12 +8,23 @@ use crate::services::process_manager;
 // ─── Process Manager ───
 
 #[tauri::command]
+#[allow(deprecated)]
 pub async fn start_tool(
+    app_handle: tauri::AppHandle,
     tool_id: String,
     start_command: Option<String>,
     cwd: Option<String>,
 ) -> Result<(), String> {
-    process_manager::start_tool(&tool_id, start_command.as_deref(), cwd.as_deref()).await
+    process_manager::start_tool(&tool_id, start_command.as_deref(), cwd.as_deref()).await?;
+    if tool_id == "claudescience" {
+        use tauri_plugin_shell::ShellExt;
+        let url = process_manager::claude_science_url().await?;
+        app_handle
+            .shell()
+            .open(url.as_str(), None)
+            .map_err(|e| format!("Failed to open Claude Science: {e}"))?;
+    }
+    Ok(())
 }
 
 // ─── Local LLM Server ───
@@ -194,10 +205,15 @@ pub async fn get_model_directory() -> serde_json::Value {
 }
 
 /// Remote-updatable free-model catalog. Returns `null` when the
-/// remote and cache are unavailable so the frontend uses its bundled JSON.
+/// remote and cache are unavailable.
 #[tauri::command]
 pub async fn get_free_model_directory() -> serde_json::Value {
     crate::services::free_model_directory::fetch_free_model_directory().await
+}
+
+#[tauri::command]
+pub fn get_cached_free_model_directory() -> serde_json::Value {
+    crate::services::free_model_directory::load_cached_free_model_directory()
 }
 
 #[tauri::command]

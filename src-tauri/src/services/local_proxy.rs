@@ -76,7 +76,7 @@ pub(crate) fn bind(name: &str, default_port: u16) -> Result<TcpListener, String>
     Ok(listener)
 }
 
-fn bind_with_fallback(port: u16) -> io::Result<TcpListener> {
+pub(super) fn bind_with_fallback(port: u16) -> io::Result<TcpListener> {
     match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
         Ok(listener) => Ok(listener),
         Err(error) if should_fallback(&error) => TcpListener::bind((Ipv4Addr::LOCALHOST, 0)),

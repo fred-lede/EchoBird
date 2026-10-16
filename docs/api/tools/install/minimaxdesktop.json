@@ -11,7 +11,7 @@
     "install": {
         "china_download_page": "https://agent.minimax.cn/download",
         "international_download_page": "https://agent.minimax.io/download",
-        "note": "One desktop tool, two regional editions. Ask China or international before installing unless the user already specified it. Use the selected official page for current links and architectures. No official Linux desktop package. EchoBird supports API model switching only; account login stays in the native client."
+        "note": "One desktop tool, two regional editions. Ask China or international before installing unless the user already specified it. Use the selected official page for current links and architectures. No official Linux desktop package. EchoBird supports API model settings and a saved account list shared with the CLI; login requires an explicit regional choice."
     },
     "install_flow": {
         "agent_steps": [
@@ -20,7 +20,7 @@
             "Read the official download page or manifest, resolve the matching Windows installer or macOS Intel/Apple Silicon DMG, verify availability and download to Downloads.",
             "Windows: use the NSIS per-user installer with Start-Process -FilePath <installer> -ArgumentList /S -WindowStyle Hidden -Wait -PassThru. Verify exit code, executable and regional update channel. Explain conflicts before replacing an opposite edition at that location.",
             "macOS: mount the matching DMG read-only with hdiutil attach -nobrowse; copy MiniMax Code.app to ~/Applications with ditto; detach; verify the bundle and regional update channel.",
-            "Refresh EchoBird detection. If both editions coexist, use the existing custom scan path priority to select the requested executable. CLI and both desktop editions share API model settings in ~/.minimax/config.yaml. Do not add account login, account switching or account quota setup in EchoBird."
+            "Refresh EchoBird detection. If both editions coexist, use the existing custom scan path priority to select the requested executable. CLI and both desktop editions share API model settings in ~/.minimax/config.yaml. Add an account in EchoBird after explicitly choosing China or international, then apply it to the installed matching edition. Saving an account does not automatically switch the client or query its quota; quota refresh is an explicit action."
         ]
     }
 }

@@ -59,7 +59,12 @@ pub fn get_download_dir() -> String {
 
 /// Set download directory
 pub fn set_download_dir(dir: &str) {
+    let models_dirs = get_models_dirs();
     let mut settings = load_model_settings();
+    settings.models_dirs = models_dirs;
+    if !settings.models_dirs.iter().any(|path| path == dir) {
+        settings.models_dirs.push(dir.to_string());
+    }
     settings.download_dir = Some(dir.to_string());
     save_model_settings(&settings);
 }

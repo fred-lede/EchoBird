@@ -1,6 +1,6 @@
-//! Sub2Api usage provider
+//! Relay subscription usage provider
 //!
-//! Sub2Api is the backend used by many AI relay/proxy sites (e.g. cc-vibe.com).
+//! Compatible relay/proxy endpoints expose subscription or wallet usage.
 //! GET {base}/v1/usage with Bearer api-key returns quota mode:
 //! { planName, unit, subscription: { daily_limit_usd, ... }, usage: { total: {...} } }
 //! or wallet mode:
@@ -9,7 +9,7 @@
 //! This is a fallback provider (can_handle always true) - it sits last in
 //! detect_provider so official providers (DeepSeek/Kimi/...) match first.
 //! Any unmatched base_url (relay/proxy) is tried against /v1/usage; if the
-//! site runs sub2api it returns 200 and we render bars, otherwise (404, bad
+//! response matches the usage schema, we render bars, otherwise (404, bad
 //! key, non-JSON, wrong shape) we silently show "暂无用量数据".
 
 use super::{
@@ -20,10 +20,10 @@ use chrono::TimeZone;
 use reqwest;
 use std::time::Duration;
 
-pub struct Sub2ApiProvider;
+pub struct RelaySubscriptionProvider;
 
 /// Build the /v1/usage endpoint from a base_url.
-/// cc-vibe.com/v1 (OpenAI) or cc-vibe.com (Anthropic) both -> https://cc-vibe.com/v1/usage
+/// Both https://relay.example/v1 and https://relay.example use /v1/usage.
 fn build_usage_url(base_url: &str) -> String {
     if let Ok(mut url) = url::Url::parse(base_url) {
         url.set_path("/v1/usage");
@@ -57,7 +57,7 @@ fn parse_plan_limit(plan_name: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Daily quota resets at next midnight in CC Vibe's timezone (CST, +08:00).
+/// The confirmed deployment's daily quota resets at midnight in CST (+08:00).
 /// Computed from the current time rather than the response's `daily_usage`
 /// date, which can be stale and yield a past reset (-> "0m" countdown).
 fn daily_reset_ms() -> i64 {
@@ -71,18 +71,18 @@ fn daily_reset_ms() -> i64 {
 }
 
 /// Build one quota bar per enforced limit found in the `subscription` object
-/// (daily/weekly/monthly). sub2api populates only the limits a plan enforces,
+/// (daily/weekly/monthly). The response contains only limits a plan enforces,
 /// so a 天卡 yields 1 bar (daily) and a 月卡 yields 3 (daily+weekly+monthly).
-/// Missing usage remains unknown. Only cc-vibe's confirmed deployment uses
+/// Missing usage remains unknown. Only the confirmed deployment uses
 /// today's API-key spend to work around its stale daily subscription aggregate.
 fn parse_subscription_quotas(body: &serde_json::Value, base_url: &str) -> Option<Vec<UsageQuota>> {
     let sub = body.get("subscription")?;
     let mut quotas: Vec<UsageQuota> = Vec::new();
     let week_ms = 7 * 24 * 60 * 60 * 1000;
-    let cc_vibe = api_url(base_url, &["cc-vibe.com"])
+    let use_today_cost = api_url(base_url, &["cc-vibe.com"])
         .is_some_and(|url| url.port_or_known_default() == Some(443));
     let aggregate_daily = sub.get("daily_usage_usd").and_then(parse_f64);
-    let daily_usage = if cc_vibe {
+    let daily_usage = if use_today_cost {
         match body.pointer("/usage/today/actual_cost") {
             Some(today) => parse_f64(today),
             None => aggregate_daily,
@@ -100,7 +100,7 @@ fn parse_subscription_quotas(body: &serde_json::Value, base_url: &str) -> Option
             QuotaPeriod::Daily,
             "daily_limit_usd",
             daily_usage,
-            cc_vibe.then(daily_reset_ms),
+            use_today_cost.then(daily_reset_ms),
         ),
         (
             QuotaPeriod::Weekly,
@@ -159,9 +159,9 @@ fn parse_balance_quota(body: &serde_json::Value) -> Option<UsageQuota> {
     UsageQuota::balance(balance, unit)
 }
 
-/// Empty result: no usage data. Sub2Api is the catch-all fallback provider, so
+/// Empty result: no usage data. This is the catch-all fallback provider, so
 /// every failure mode (unreachable host, non-2xx, non-JSON, or a 200 that isn't
-/// sub2api-shaped) collapses to this - the UI shows "暂无用量数据" instead of a
+/// compatible usage response) collapses to this - the UI shows "暂无用量数据" instead of a
 /// provider-specific error toast.
 fn no_data() -> UsageResult {
     UsageResult {
@@ -172,7 +172,7 @@ fn no_data() -> UsageResult {
 }
 
 #[async_trait::async_trait]
-impl UsageProvider for Sub2ApiProvider {
+impl UsageProvider for RelaySubscriptionProvider {
     async fn query_usage(&self, api_key: &str, base_url: &str) -> Result<UsageResult, String> {
         let usage_url = build_usage_url(base_url);
         let client = reqwest::Client::new();
@@ -189,8 +189,8 @@ impl UsageProvider for Sub2ApiProvider {
             Err(_) => return Ok(no_data()),
         };
 
-        // Any non-2xx (404 = not sub2api, 401/403, 5xx, ...) -> no data. As a
-        // guess fallback we can't tell a bad key from a non-sub2api endpoint, so
+        // Any non-2xx (404, 401/403, 5xx, ...) -> no data. As a
+        // guess fallback we can't tell a bad key from an incompatible endpoint, so
         // we never surface a specific error; the UI shows "暂无用量数据".
         if !resp.status().is_success() {
             return Ok(no_data());
@@ -240,10 +240,10 @@ impl UsageProvider for Sub2ApiProvider {
             });
         }
 
-        // Legacy fallback (sub2api without `subscription`): single bar from
+        // Legacy fallback without `subscription`: single bar from
         // total cost vs the limit parsed out of the plan name. Only emit a bar
-        // when we actually parsed a limit; otherwise the 200 isn't real sub2api
-        // data -> no data (avoids a bogus 0% bar on non-sub2api endpoints).
+        // when we actually parsed a limit; otherwise the 200 isn't usage
+        // data -> no data (avoids a bogus 0% bar on incompatible endpoints).
         let plan_name = body
             .get("planName")
             .and_then(|v| v.as_str())
@@ -288,7 +288,7 @@ impl UsageProvider for Sub2ApiProvider {
     }
 
     fn name(&self) -> &'static str {
-        "Sub2Api"
+        "Relay Subscription"
     }
 }
 
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn fresh_day_with_zero_today_is_0_pct_not_100() {
-        // Real cc-vibe.com shape on a new day with no usage yet: the upstream
+        // The confirmed deployment on a new day with no usage yet: the upstream
         // leaves `subscription.daily_usage_usd` holding YESTERDAY's spend
         // (200.708 against a 200 limit) while `usage.today.actual_cost` is the
         // authoritative 0. We must read today's figure, else the bar wrongly
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn daily_falls_back_to_daily_usage_usd_when_today_absent() {
-        // Older sub2api builds expose no `usage.today`; keep using
+        // Older compatible endpoints expose no `usage.today`; keep using
         // `subscription.daily_usage_usd` so we don't regress those sites.
         let body = json!({
             "planName": "天卡 每日200刀",

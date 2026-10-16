@@ -2,7 +2,6 @@ import React from 'react';
 import { useAppManager } from './context';
 import { AccountSectionButton, AccountSectionRow } from './AccountSectionPrimitives';
 import { QuotaCountdown } from './QuotaCountdown';
-import { isFreePlan } from './accountPlanLabel';
 
 export const AntigravityAccountSection: React.FC = () => {
   const { antigravityAccounts, isLaunching, selectedTool } = useAppManager();
@@ -77,9 +76,7 @@ export const AntigravityAccountSection: React.FC = () => {
                   </span>
                 ) : parts.length ? (
                   parts.join(' · ')
-                ) : isFreePlan(account.plan) ? undefined : (
-                  '—'
-                )
+                ) : undefined
               }
               refreshing={refreshing.has(account.id)}
               authorizationFailed={antigravityAccounts.authorizationFailedIds.has(account.id)}

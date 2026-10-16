@@ -48,37 +48,39 @@ export const ClaudeCodeAccountSection: React.FC<{ showDivider?: boolean; desktop
               onRefresh={() => void refresh(account)}
               onDelete={() => void remove(account)}
               secondary={
-                account.fiveHour == null && account.sevenDay == null ? (
-                  <span className="truncate text-[11px]">{t('model.noUsageData')}</span>
-                ) : (
+                account.fiveHour == null && account.sevenDay == null ? undefined : (
                   <span className="flex h-[16px] min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-[11px] font-semibold leading-[16px] text-cyber-text">
-                    <span className="flex flex-shrink-0 items-center gap-0.5">
-                      {account.fiveHour == null ? '—' : `${account.fiveHour.remainingPercent}%`}
-                      {account.fiveHour?.resetAt ? (
-                        <QuotaCountdown
-                          resetAt={account.fiveHour?.resetAt}
-                          compact
-                          small
-                          parenthesized
-                        />
-                      ) : (
-                        <span className="text-[10px]">5h</span>
-                      )}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span className="flex flex-shrink-0 items-center gap-0.5">
-                      {account.sevenDay == null ? '—' : `${account.sevenDay.remainingPercent}%`}
-                      {account.sevenDay?.resetAt ? (
-                        <QuotaCountdown
-                          resetAt={account.sevenDay?.resetAt}
-                          compact
-                          small
-                          parenthesized
-                        />
-                      ) : (
-                        <span className="text-[10px]">7d</span>
-                      )}
-                    </span>
+                    {account.fiveHour && (
+                      <span className="flex flex-shrink-0 items-center gap-0.5">
+                        {`${account.fiveHour.remainingPercent}%`}
+                        {account.fiveHour?.resetAt ? (
+                          <QuotaCountdown
+                            resetAt={account.fiveHour?.resetAt}
+                            compact
+                            small
+                            parenthesized
+                          />
+                        ) : (
+                          <span className="text-[10px]">5h</span>
+                        )}
+                      </span>
+                    )}
+                    {account.fiveHour && account.sevenDay && <span aria-hidden="true">·</span>}
+                    {account.sevenDay && (
+                      <span className="flex flex-shrink-0 items-center gap-0.5">
+                        {`${account.sevenDay.remainingPercent}%`}
+                        {account.sevenDay?.resetAt ? (
+                          <QuotaCountdown
+                            resetAt={account.sevenDay?.resetAt}
+                            compact
+                            small
+                            parenthesized
+                          />
+                        ) : (
+                          <span className="text-[10px]">7d</span>
+                        )}
+                      </span>
+                    )}
                   </span>
                 )
               }

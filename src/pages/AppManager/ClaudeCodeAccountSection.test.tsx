@@ -68,7 +68,8 @@ describe('Claude Code account card', () => {
   });
 
   it('distinguishes unavailable quota from an exhausted account', () => {
-    expect(renderAccount(null)).toContain('—');
+    expect(renderAccount(null)).not.toContain('—');
+    expect(renderAccount(null)).toContain('82%');
     expect(renderAccount(null)).not.toContain('0%');
     expect(renderAccount(0)).toContain('0%');
     expect(renderAccount(0)).toContain('5h');
@@ -97,7 +98,8 @@ describe('Claude Code account card', () => {
     expect(markup).toContain('/icons/tools/claudedesktop.svg');
     expect(markup).toContain('claude-account-pill');
     expect(markup).toContain('agent.claudeDesktopExitClient');
-    expect(markup).toContain('—');
+    expect(markup).not.toContain('—');
+    expect(markup).toContain('82%');
     expect(markup).not.toContain('5h:');
     expect(markup).toContain('grid h-12');
     expect(markup.match(/Max 5X/g)).toHaveLength(1);

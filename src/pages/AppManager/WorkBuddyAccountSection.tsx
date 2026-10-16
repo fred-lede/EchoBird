@@ -10,7 +10,6 @@ import {
 import { QuotaCountdown } from './QuotaCountdown';
 import { useI18n } from '../../hooks/useI18n';
 import { useWorkBuddyClaimedToday } from './workBuddyDailyCredits';
-import { isFreePlan } from './accountPlanLabel';
 export const WorkBuddyAccountSection: React.FC<{ showDivider?: boolean }> = ({
   showDivider = true,
 }) => {
@@ -31,7 +30,7 @@ export const WorkBuddyAccountSection: React.FC<{ showDivider?: boolean }> = ({
   const claimedToday = useWorkBuddyClaimedToday(selectedTool === 'workbuddy');
   const formatCredits = (value?: number | null) =>
     value == null
-      ? '—'
+      ? t('model.noUsageData')
       : value.toLocaleString(undefined, { maximumFractionDigits: 2, useGrouping: false });
   return (
     <section>
@@ -73,14 +72,13 @@ export const WorkBuddyAccountSection: React.FC<{ showDivider?: boolean }> = ({
                   ) : undefined
                 }
                 secondary={
-                  isFreePlan(account.plan) &&
                   account.remaining == null &&
                   account.baseRemaining == null &&
                   account.rewardRemaining == null &&
                   account.addonRemaining == null ? undefined : (
                     <span className="flex h-[16px] min-w-0 items-center gap-1 overflow-hidden text-[11px] font-semibold whitespace-nowrap">
                       <span
-                        className="flex flex-shrink-0 items-center gap-1"
+                        className="flex flex-shrink-0 items-baseline gap-1"
                         aria-label={t('agent.baseCredits')}
                       >
                         {formatCredits(account.baseRemaining)}

@@ -16,7 +16,7 @@
 // Launch behaviour is unchanged: linkedToolId on a built-in still routes
 // AppManager's selectedTool to the bundled launch_game flow; user entries
 // are inert on click for now (Phase D will spawn their launcher exe).
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Plus, Folder, X } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -35,6 +35,7 @@ import { useToolsStore } from '../../stores/toolsStore';
 import { useAppManager } from '../AppManager/context';
 import { ToolCard } from '../../components';
 import { useConfirm } from '../../components/ConfirmDialog';
+import { useToast } from '../../components/Toast';
 
 // Placeholder examples shown inside the file-picker fields when nothing's
 // been chosen yet. Kept in English path style across all locales — the
@@ -195,6 +196,7 @@ const ProjectToolCard: React.FC<{
   onEdit: (id: string) => void;
 }> = ({ project, isBuiltin, onSelect, onEdit }) => {
   const { t } = useI18n();
+  const { showToast } = useToast();
   const detectedTools = useToolsStore((s) => s.detectedTools);
   const deleteProject = useMyProjectsStore((s) => s.deleteProject);
   const hideBuiltin = useMyProjectsStore((s) => s.hideBuiltin);
@@ -251,7 +253,11 @@ const ProjectToolCard: React.FC<{
               if (isBuiltin && project.linkedToolId) {
                 hideBuiltin(project.linkedToolId as BuiltinToolId);
               } else {
-                deleteProject(project.id);
+                try {
+                  await deleteProject(project.id);
+                } catch {
+                  showToast('error', t('error.requestFailed'));
+                }
               }
             }}
             className="text-xs font-mono text-cyber-text-muted/70 hover:text-red-500 transition-colors"
@@ -281,6 +287,7 @@ const AddProjectDialog: React.FC<{
   findEntry: (id: string) => MyProject | undefined;
 }> = ({ editingId, onClose, findEntry }) => {
   const { t } = useI18n();
+  const { showToast } = useToast();
   const addProject = useMyProjectsStore((s) => s.addProject);
   const updateProject = useMyProjectsStore((s) => s.updateProject);
   const builtinDirs = useMyProjectsStore((s) => s.builtinDirs);
@@ -298,6 +305,15 @@ const AddProjectDialog: React.FC<{
   const [iconPath, setIconPath] = useState(existing?.iconPath ?? '');
   const [launcherPath, setLauncherPath] = useState(existing?.launcherPath ?? '');
   const [modelsJsonPath, setModelsJsonPath] = useState(existing?.modelsJsonPath ?? '');
+  const [saving, setSaving] = useState(false);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // ESC closes
   useEffect(() => {
@@ -351,7 +367,8 @@ const AddProjectDialog: React.FC<{
     }
   }, [builtinFolder]);
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
+    if (saving) return;
     if (isBuiltin) {
       // Built-ins are read-only; the dialog acts as an inspector. No save.
       onClose();
@@ -363,12 +380,19 @@ const AddProjectDialog: React.FC<{
       launcherPath,
       modelsJsonPath,
     };
-    if (editingId) {
-      updateProject(editingId, input);
-    } else {
-      addProject(input);
+    setSaving(true);
+    try {
+      if (editingId) {
+        await updateProject(editingId, input);
+      } else {
+        await addProject(input);
+      }
+      if (mounted.current) onClose();
+    } catch {
+      showToast('error', t('error.requestFailed'));
+    } finally {
+      if (mounted.current) setSaving(false);
     }
-    onClose();
   }, [
     isBuiltin,
     name,
@@ -379,6 +403,9 @@ const AddProjectDialog: React.FC<{
     updateProject,
     addProject,
     onClose,
+    saving,
+    showToast,
+    t,
   ]);
 
   return (
@@ -490,6 +517,7 @@ const AddProjectDialog: React.FC<{
               <div className="w-px bg-cyber-border/40" />
               <button
                 onClick={handleSave}
+                disabled={saving}
                 className="flex-1 px-6 py-3 text-[14px] text-cyber-text hover:bg-cyber-elevated transition-colors font-semibold"
               >
                 {t('btn.save')}

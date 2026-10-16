@@ -29,8 +29,20 @@ fn cbc_key(password: &[u8], iterations: u32) -> [u8; 16] {
 }
 
 pub(super) fn cipher(dir: &Path) -> Result<Cipher, String> {
+    #[cfg(unix)]
+    let name = dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("accountError.home")?;
+    #[cfg(not(unix))]
+    let name = "";
+    cipher_with_name(dir, name)
+}
+
+pub(super) fn cipher_with_name(dir: &Path, name: &str) -> Result<Cipher, String> {
     #[cfg(windows)]
     {
+        let _ = name;
         use windows::Win32::{
             Foundation::{LocalFree, HLOCAL},
             Security::Cryptography::{
@@ -78,10 +90,7 @@ pub(super) fn cipher(dir: &Path) -> Result<Cipher, String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let name = dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or("accountError.home")?;
+        let _ = dir;
         let output = crate::utils::process::command("/usr/bin/security")
             .args([
                 "find-generic-password",
@@ -120,10 +129,6 @@ pub(super) fn cipher(dir: &Path) -> Result<Cipher, String> {
                 });
             }
         }
-        let name = dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or("accountError.home")?;
         let password = linux::password(name)?;
         Ok(Cipher::Cbc {
             key: cbc_key(&password, 1),
@@ -133,7 +138,7 @@ pub(super) fn cipher(dir: &Path) -> Result<Cipher, String> {
     }
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
-        let _ = dir;
+        let _ = (dir, name);
         Err("accountError.unavailable".into())
     }
 }

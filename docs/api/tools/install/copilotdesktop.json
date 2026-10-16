@@ -1,0 +1,29 @@
+{
+    "id": "copilotdesktop",
+    "displayName": "GitHub Copilot Desktop",
+    "homepage": "https://github.com/github/app",
+    "docs": "https://docs.github.com/en/copilot/get-started/quickstart-copilot-app",
+    "github": "https://github.com/github/app",
+    "kind": "desktop",
+    "platforms": ["windows", "macos", "linux"],
+    "install": {
+        "windows_download": "Download the matching official stable installer: https://github.com/github/app/releases/latest/download/GitHub-Copilot-windows-x64-setup.exe or https://github.com/github/app/releases/latest/download/GitHub-Copilot-windows-arm64-setup.exe . Run the installer, then refresh detection.",
+        "macos_download": "Download the matching official DMG: https://github.com/github/app/releases/latest/download/GitHub-Copilot-darwin-arm64.dmg or https://github.com/github/app/releases/latest/download/GitHub-Copilot-darwin-x64.dmg . Drag GitHub Copilot to Applications.",
+        "linux_download": "Download the official AppImage matching the architecture: https://github.com/github/app/releases/latest/download/GitHub-Copilot-linux-x64.AppImage or https://github.com/github/app/releases/latest/download/GitHub-Copilot-linux-arm64.AppImage . Save under ~/Applications, make executable, and register a per-user ~/.local/share/applications/github-copilot.desktop entry with Type=Application, Name=GitHub Copilot and Exec pointing to the absolute AppImage path. Quote and escape paths containing spaces. Official release assets also include GitHub-Copilot-linux-x64.deb, GitHub-Copilot-linux-arm64.deb, GitHub-Copilot-linux-x64.rpm and GitHub-Copilot-linux-arm64.rpm; use the architecture and package format matching the distribution.",
+        "note": "GitHub Copilot app is the official desktop agent, separate from GitHub Desktop, the copilot CLI package and editor extensions. On Windows the verified executable is %LOCALAPPDATA%\\Programs\\GitHub Copilot\\github.exe. macOS launch must resolve the app bundle's CFBundleExecutable; do not assume an internal filename. The desktop app requires GitHub sign-in even with BYOK. Its native account/provider database is distinct from CLI providers.json; preserve existing native accounts and providers."
+    },
+    "install_flow": {
+        "summary": "Detect the existing official desktop app first; download only the official asset matching this platform and architecture.",
+        "agent_steps": [
+            "Detect OS, architecture and any existing GitHub Copilot desktop app. Preserve an installed working client.",
+            "Use the official github/app README and release assets; do not install GitHub Desktop or use winget GitHub.Copilot as a substitute for the desktop app.",
+            "Save and open the matching installer. Let the user complete the installer wizard or drag the macOS app into Applications.",
+            "On Linux, create the per-user desktop entry after making the official AppImage executable. Refresh detection and launch the installed app.",
+            "Sign in using the official GitHub browser flow. BYOK is configured through Model providers; it still requires a GitHub account, while a paid Copilot plan is not required for BYOK."
+        ]
+    },
+    "network_requirements": {
+        "test_urls": ["https://github.com/github/app", "https://api.github.com"],
+        "mirrors": {}
+    }
+}

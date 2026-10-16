@@ -76,7 +76,7 @@ export const RemoteModelSelector: React.FC<RemoteModelSelectorProps> = ({
 
   // Tailwind JIT-friendly static class strings (Mother Agent secondary accent)
   const triggerClass =
-    'flex items-center gap-1.5 px-2 py-1 text-xs font-mono text-cyber-text transition-colors rounded hover:bg-cyber-elevated disabled:cursor-default';
+    'flex items-center gap-1.5 pl-2 pr-0 py-1 text-xs font-mono text-cyber-text transition-colors rounded hover:bg-cyber-elevated disabled:cursor-default';
   const spinClass = 'animate-spin text-cyber-text/70';
   const selectedItemClass = 'text-cyber-text bg-cyber-text/10';
   const unselectedItemClass = 'text-cyber-text hover:bg-cyber-elevated hover:text-cyber-text';

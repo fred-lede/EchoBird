@@ -3,6 +3,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { SettingsDialog } from './SettingsDialog';
 import { useUiScaleStore } from '../stores/uiScaleStore';
+import { useEasterEggStore } from '../stores/easterEggStore';
 
 const mocks = vi.hoisted(() => ({ zoom: vi.fn(), save: vi.fn() }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: async () => '' }));
@@ -28,6 +29,7 @@ beforeEach(() => {
   vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   vi.stubGlobal('document', { addEventListener: vi.fn(), removeEventListener: vi.fn() });
   vi.stubGlobal('localStorage', { getItem: vi.fn(), setItem: vi.fn() });
+  useEasterEggStore.setState({ enabled: true });
   useUiScaleStore.setState({
     preference: 'auto',
     requestedPreference: null,
@@ -49,6 +51,96 @@ async function tab(label: string) {
       .props.onClick();
   });
 }
+
+function easterEggSwitch() {
+  return view.root
+    .findByProps({ children: 'settings.easterEgg' })
+    .parent!.parent!.findByProps({ role: 'switch' });
+}
+
+function EasterEggObserver() {
+  const enabled = useEasterEggStore((state) => state.enabled);
+  return <span data-easter-egg-state>{String(enabled)}</span>;
+}
+
+it('updates the shared Easter Egg setting and other consumers immediately from the existing switch', async () => {
+  await act(async () => {
+    view = create(
+      <>
+        <SettingsDialog {...props} />
+        <EasterEggObserver />
+      </>
+    );
+  });
+  expect(easterEggSwitch().props['aria-checked']).toBe(true);
+  await act(async () => {
+    easterEggSwitch().props.onClick();
+  });
+  expect(easterEggSwitch().props['aria-checked']).toBe(false);
+  expect(view.root.findByProps({ 'data-easter-egg-state': true }).props.children).toBe('false');
+  expect(localStorage.setItem).toHaveBeenCalledExactlyOnceWith('echobird_easter_egg', 'false');
+  expect(mocks.save).not.toHaveBeenCalled();
+});
+
+it('reflects a shared Easter Egg change while settings is already open', async () => {
+  await act(async () => {
+    view = create(<SettingsDialog {...props} />);
+  });
+  await act(async () => {
+    useEasterEggStore.getState().setEnabled(false);
+  });
+  expect(easterEggSwitch().props['aria-checked']).toBe(false);
+});
+
+it.each([true, false])(
+  'preserves the shared %s Easter Egg choice through tabs and reopening without storage writes',
+  async (enabled) => {
+    useEasterEggStore.setState({ enabled });
+    await act(async () => {
+      view = create(<SettingsDialog {...props} />);
+    });
+    expect(easterEggSwitch().props['aria-checked']).toBe(enabled);
+    await tab('settings.appearance');
+    await tab('settings.general');
+    await act(async () => {
+      view.update(<SettingsDialog {...props} isOpen={false} />);
+    });
+    await act(async () => {
+      view.update(<SettingsDialog {...props} />);
+    });
+    expect(easterEggSwitch().props['aria-checked']).toBe(enabled);
+    expect(localStorage.getItem).not.toHaveBeenCalled();
+    expect(localStorage.setItem).not.toHaveBeenCalled();
+    expect(mocks.save).not.toHaveBeenCalled();
+  }
+);
+
+it('keeps Easter Egg disabled in memory and on reopening when storage is unavailable', async () => {
+  vi.mocked(localStorage.getItem).mockImplementation(() => {
+    throw new Error('storage unavailable');
+  });
+  vi.mocked(localStorage.setItem).mockImplementation(() => {
+    throw new Error('storage unavailable');
+  });
+  await act(async () => {
+    view = create(<SettingsDialog {...props} />);
+  });
+  await act(async () => {
+    easterEggSwitch().props.onClick();
+  });
+  expect(useEasterEggStore.getState().enabled).toBe(false);
+  expect(easterEggSwitch().props['aria-checked']).toBe(false);
+  await act(async () => {
+    view.update(<SettingsDialog {...props} isOpen={false} />);
+  });
+  await act(async () => {
+    view.update(<SettingsDialog {...props} />);
+  });
+  expect(easterEggSwitch().props['aria-checked']).toBe(false);
+  expect(localStorage.getItem).not.toHaveBeenCalled();
+  expect(localStorage.setItem).toHaveBeenCalledExactlyOnceWith('echobird_easter_egg', 'false');
+  expect(mocks.save).not.toHaveBeenCalled();
+});
 
 it('only changes scale on explicit selection, not settings entry, tab changes or reopening', async () => {
   await act(async () => {

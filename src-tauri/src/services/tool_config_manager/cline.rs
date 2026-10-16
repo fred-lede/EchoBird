@@ -1,5 +1,5 @@
 //! Cline CLI and Desktop share native providers and have separate selectors.
-mod desktop;
+pub(crate) mod desktop;
 
 use super::{ApplyResult, ModelInfo};
 use serde_json::{json, Value};
@@ -36,7 +36,7 @@ fn resolve_config_path(env: impl Fn(&str) -> Option<String>, home: PathBuf) -> P
         .join("settings/providers.json")
 }
 
-fn load(path: &Path) -> Result<Value, String> {
+pub(crate) fn load(path: &Path) -> Result<Value, String> {
     let state: Value = match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "Invalid Cline provider JSON")?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

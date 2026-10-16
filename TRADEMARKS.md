@@ -176,14 +176,30 @@ the original four-surface combination referenced in §5 and [NOTICE](NOTICE).
 Dates below use Git committer timestamps in **UTC+08:00** and record
 source-history milestones.
 
+**Current model selection and switching.** EchoBird supports choosing and
+switching models through both model configuration and signed-in accounts.
+The timeline records the evolution of the graphical routing interface;
+account-based switching is part of the current client capabilities.
+
 | Date | Commit | Page / milestone | Evidence |
 |---|---|---|---|
-| **2026-08-28** | [`6036387c`](https://github.com/edison7009/EchoBird/commit/6036387ce0f6e9581e6e15000dd1597216a1cc7c) | **Smart Router — concept and initial UI** | The name and intended single-API aggregation / automatic failover appear in `src/i18n/zh-Hans.ts`; `src/pages/FreeModels/FreeModels.tsx` adds the catalog and router hub mockup. The API address is still a placeholder at this stage. |
+| **2026-08-28** | [`6036387c`](https://github.com/edison7009/EchoBird/commit/6036387ce0f6e9581e6e15000dd1597216a1cc7c) | **Smart Router — concept and initial graphical UI** | `src/i18n/zh-Hans.ts` records a unified model entry and automatic-failover concept. `src/pages/FreeModels/FreeModels.tsx` already displays model-node cards and a router hub connected by SVG dashed paths; `FreeModels.css` defines their dashed appearance and basic flow animation. The local endpoint is still a placeholder at this stage. |
 | **2026-08-30** | [`bf28470d`](https://github.com/edison7009/EchoBird/commit/bf28470d7ece010cbe5aee24bca7125987467c2e) | **Smart Router — routing backend** | Adds `src-tauri/src/services/smart_router/` and `src/api/smartRouter.ts`, with candidate configuration, local routing and a selectable router model for the existing model consumers. |
 | **2026-09-11** | [`e024d5d5`](https://github.com/edison7009/EchoBird/commit/e024d5d5cfea6600e139766c2d1456a9eef32ca7) | **Smart Router — ordered routing and saved models** | Numbered model cards, drag-to-reorder with saved priority, ordered failover and saved-model management establish the priority-based interaction. |
 | **2026-10-08** | [`bb0b5755`](https://github.com/edison7009/EchoBird/commit/bb0b5755505c7ad073bce97aa0a08fdde157c6e3) | **Account Management — dedicated page** | Adds `src/pages/AccountCenter/AccountCenter.tsx`: a cross-provider account-card grid, saved display order, right-hand provider directory, shared login lifecycle and explicit batch quota refresh. |
-| **2026-10-08** | [`deffe277`](https://github.com/edison7009/EchoBird/commit/deffe2771f5aba33df51010db754e3539a87b92e) | **Smart Router — visual routing graph update** | Refines the hub / numbered-card layout, connecting paths, enabled state and active-route animation in `src/pages/FreeModels/FreeModels.tsx` and `FreeModels.css`. |
+| **2026-10-08** | [`deffe277`](https://github.com/edison7009/EchoBird/commit/deffe2771f5aba33df51010db754e3539a87b92e) | **Smart Router — further refinement of the existing routing graph** | Builds on the graphical hub, model nodes, dashed links and basic animation already recorded on **2026-08-28**. Adds model/provider icons to routing cards and refines layout, line weight/color, enabled state and active-route feedback in `src/pages/FreeModels/FreeModels.tsx` and `FreeModels.css`. |
 | **2026-10-09** | [`80ca3baf`](https://github.com/edison7009/EchoBird/commit/80ca3baf919fbf0508d72357f9472a67f6c304f9) | **Orchestration Router — static preview view (then named Super Router)** | Adds Smart / Super view switching, a disabled router hub, a primary model numbered **0** and six supplemental model cards numbered **1–6**. This commit records the preview composition; Orchestration Router execution is not implemented. |
+| **2026-10-10** | [`ae6e3c5b`](https://github.com/edison7009/EchoBird/commit/ae6e3c5b10047c0be4e6fabb17b3725ba8d89513) | **Routing graph — rounded paths and primary-model emphasis** | Adds rounded turns to route paths and emphasizes the primary model. These are further geometric and visual refinements of the existing graphical routing presentation. |
+
+**Graphical routing presentation.** Model cards/icons, a router hub and
+dashed connecting paths visually explain the model relationships used by
+AI applications. Model nodes, the hub, dashed links and basic flow animation
+are already documented on **2026-08-28**; later icon, layout and path-geometry
+changes develop that presentation. Within the independently verifiable
+materials currently collected for this statement, we have not identified
+an earlier comparable model-switching product documenting the same
+combination of model nodes, a router hub and dashed routing links before
+**2026-08-28**. This describes the statement's current evidence scope.
 
 **Relationships of the later pages:**
 
@@ -662,14 +678,27 @@ Orchestration Router**是智能路由页面内的一个视图。以下里程碑�
 扩展;§5 与 [NOTICE](NOTICE) 中的原始四界面组合仍指前述四个界面。
 下表日期按 Git 提交者时间戳的 **UTC+08:00** 日期记录,作为源码历史证据。
 
+**当前的模型选择与切换。** EchoBird 已支持通过模型配置和已登录账号选择、
+切换模型。下表记录图形路由界面的演进;账号模式的模型切换属于客户端
+现有能力。
+
 | 日期 | Commit | 页面 / 里程碑 | 证据 |
 |---|---|---|---|
-| **2026-08-28** | [`6036387c`](https://github.com/edison7009/EchoBird/commit/6036387ce0f6e9581e6e15000dd1597216a1cc7c) | **智能路由 —— 概念与初始界面** | `src/i18n/zh-Hans.ts` 已记录名称及「单一本地 API 汇总模型、自动切换」的设计说明;`src/pages/FreeModels/FreeModels.tsx` 加入目录与路由枢纽示意。此时 API 地址仍为占位显示。 |
+| **2026-08-28** | [`6036387c`](https://github.com/edison7009/EchoBird/commit/6036387ce0f6e9581e6e15000dd1597216a1cc7c) | **智能路由 —— 概念与初始图形界面** | `src/i18n/zh-Hans.ts` 已记录统一模型入口与自动切换的设计概念。`src/pages/FreeModels/FreeModels.tsx` 已用模型节点卡片、路由枢纽与 SVG 虚线连接展示路由关系;`FreeModels.css` 定义虚线样式及基础流动动画。此时本地端点仍为占位显示。 |
 | **2026-08-30** | [`bf28470d`](https://github.com/edison7009/EchoBird/commit/bf28470d7ece010cbe5aee24bca7125987467c2e) | **智能路由 —— 路由后端** | 新增 `src-tauri/src/services/smart_router/` 与 `src/api/smartRouter.ts`,实现候选模型配置、本地路由,并向既有模型消费界面提供可选择的路由模型。 |
 | **2026-09-11** | [`e024d5d5`](https://github.com/edison7009/EchoBird/commit/e024d5d5cfea6600e139766c2d1456a9eef32ca7) | **智能路由 —— 顺序路由与已存模型管理** | 编号模型卡片、拖动排序并保存优先级、按顺序故障切换及已存模型管理,形成按优先级路由的交互。 |
 | **2026-10-08** | [`bb0b5755`](https://github.com/edison7009/EchoBird/commit/bb0b5755505c7ad073bce97aa0a08fdde157c6e3) | **账号管理 —— 独立页面** | 新增 `src/pages/AccountCenter/AccountCenter.tsx`:跨厂商账号卡片网格、持久化显示顺序、右侧厂商目录、共享登录生命周期与显式批量额度刷新。 |
-| **2026-10-08** | [`deffe277`](https://github.com/edison7009/EchoBird/commit/deffe2771f5aba33df51010db754e3539a87b92e) | **智能路由 —— 可视化路由图更新** | 在 `src/pages/FreeModels/FreeModels.tsx` 与 `FreeModels.css` 中调整枢纽 / 编号卡片布局、连接路径、启用状态与当前路由动画。 |
+| **2026-10-08** | [`deffe277`](https://github.com/edison7009/EchoBird/commit/deffe2771f5aba33df51010db754e3539a87b92e) | **智能路由 —— 既有可视化路由图的二次优化** | 在 **2026-08-28** 已有的路由枢纽、模型节点、虚线连接及基础动画上继续优化。在 `src/pages/FreeModels/FreeModels.tsx` 与 `FreeModels.css` 中为路由卡片加入模型 / 厂商图标,细化布局、连接线粗细与颜色、启用状态及活动路由反馈。 |
 | **2026-10-09** | [`80ca3baf`](https://github.com/edison7009/EchoBird/commit/80ca3baf919fbf0508d72357f9472a67f6c304f9) | **多模型编排路由 —— 静态预览视图（当时名为超级路由）** | 新增智能 / 超级视图切换、禁用的路由枢纽、编号 **0** 的主模型与编号 **1–6** 的六张辅助模型卡片。该提交记录预览界面构图,尚未实现多模型编排路由执行。 |
+| **2026-10-10** | [`ae6e3c5b`](https://github.com/edison7009/EchoBird/commit/ae6e3c5b10047c0be4e6fabb17b3725ba8d89513) | **路由图 —— 圆角转弯与主模型强调** | 为路由连接路径增加圆角转弯,突出主模型。这是在既有图形路由表达上继续调整路径几何与视觉细节。 |
+
+**图形化路由表达。** 界面通过模型卡片 / 图标、路由枢纽与虚线连接,
+直观展示 AI 应用所使用的模型关系。模型节点、路由枢纽、虚线连接及基础
+流动动画在 **2026-08-28** 已有记录,后续图标、布局与路径弯曲等调整是在
+这一图形表达上继续优化。在本声明目前已取得并可核验的材料中,尚未找到
+同类模型切换产品在 **2026-08-28** 之前已采用「模型节点 + 路由枢纽 +
+虚线路由连接」这一具体图形组合的更早证据。该表述限于本声明当前的
+证据收集范围。
 
 **后续页面的关系:**
 

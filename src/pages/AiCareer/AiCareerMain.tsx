@@ -1,104 +1,166 @@
-// "我的AI生涯" center page — editable avatar, five activity stats, the
-// contribution heatmap, and the six family cards. The three blocks (stats,
-// heatmap, cards) all span the same row width so they line up. Selecting a
-// family card drives the right panel (AiCareerPanel) via the shared store.
+// AI-career overview and per-family dashboards.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '../../hooks/useI18n';
 import { useAiCareerStore } from '../../stores/aiCareerStore';
+import { useNavigationStore } from '../../stores/navigationStore';
 import {
   aiCareerHeatmap,
   aiCareerTokenBytes,
+  aiCareerDailyTokens,
   getAvatar,
   setAvatar,
-  type AiCareerFamily,
 } from '../../api/aiCareer';
-import { deriveStats, entriesToBuckets, formatCompact, type DayBuckets } from './heatmapData';
-
-// Approximate cumulative tokens *processed*. Each turn re-sends the ever-
-// growing context, so real usage runs far above the raw stored content (stored
-// once, re-read many times) — we scale the on-disk byte size up to reflect
-// that. Deliberately generous; the stat is labelled "约 / Est." anyway. Tune
-// this one number to dial the magnitude.
-const TOKENS_PER_BYTE = 12;
+import {
+  deriveStats,
+  entriesToBuckets,
+  formatCompact,
+  localDayKey,
+  type DayBuckets,
+} from './heatmapData';
 import { ContributionHeatmap } from './ContributionHeatmap';
+import { DailyActivityChart } from './DailyActivityChart';
+import { AiCareerPanel } from './AiCareerPanel';
 
+// Keep the existing labeled cumulative-token estimate for summary cards.
+const TOKENS_PER_BYTE = 12;
 const EMPTY_BUCKETS: DayBuckets = { messages: new Map(), sessions: new Map() };
-
-// Default avatar — a small (320px, ~32KB WebP) image bundled in public/, so it
-// shows instantly offline with no network/CDN dependency. Replaced by the
-// user's own image once they pick one.
 const DEFAULT_AVATAR = '/default-avatar.webp';
 
-const FAMILIES: ReadonlyArray<{ id: AiCareerFamily; name: string; icon: string }> = [
-  { id: 'claude', name: 'Claude', icon: 'claude' },
-  { id: 'codex', name: 'Codex', icon: 'codex' },
-  { id: 'opencode', name: 'OpenCode', icon: 'opencode' },
-  { id: 'deepseek', name: 'DeepSeek', icon: 'dsh' },
-  { id: 'hermes', name: 'Hermes', icon: 'hermes' },
-  { id: 'mimo', name: 'MiMo', icon: 'mimocode' },
-];
-
-function FamilyIcon({ icon, name }: { icon: string; name: string }) {
-  // Most tool icons are SVG; a couple (e.g. hermes) ship as PNG — fall back
-  // once on error, matching ToolCard's behaviour.
-  const [src, setSrc] = useState(`./icons/tools/${icon}.svg`);
-  return (
-    <img
-      src={src}
-      alt={name}
-      className="w-8 h-8 rounded-lg flex-shrink-0 object-contain"
-      onError={() => {
-        if (src.endsWith('.svg')) setSrc(`./icons/tools/${icon}.png`);
-      }}
-    />
-  );
+interface TokenResult {
+  key: string;
+  failed: boolean;
 }
 
 export function AiCareerMain() {
   const { t } = useI18n();
   const selectedFamily = useAiCareerStore((s) => s.selectedFamily);
-  const setSelectedFamily = useAiCareerStore((s) => s.setSelectedFamily);
+  const chartMetric = useAiCareerStore((s) => s.chartMetric);
+  const setChartMetric = useAiCareerStore((s) => s.setChartMetric);
   const refreshKey = useAiCareerStore((s) => s.refreshKey);
+  const refresh = useAiCareerStore((s) => s.refresh);
   const setRefreshing = useAiCareerStore((s) => s.setRefreshing);
-
-  const [buckets, setBuckets] = useState<DayBuckets>(EMPTY_BUCKETS);
+  const cacheDashboard = useAiCareerStore((s) => s.cacheDashboard);
+  const cacheDailyTokens = useAiCareerStore((s) => s.cacheDailyTokens);
+  const activePage = useNavigationStore((s) => s.activePage);
+  const [settledKey, setSettledKey] = useState('');
+  const [failedKey, setFailedKey] = useState('');
+  const [tokenResults, setTokenResults] = useState<Record<string, TokenResult>>({});
+  const [tokenRetry, setTokenRetry] = useState(0);
+  const visitRef = useRef(0);
+  const tokenRequestRef = useRef('');
+  const explicitTokenRetryRef = useRef(false);
   const [avatar, setAvatarUrl] = useState<string | null>(null);
-  const [tokenBytes, setTokenBytes] = useState(0);
+  const scope = selectedFamily ?? 'overview';
+  const currentKey = scope + '::' + refreshKey;
+  const snapshot = useAiCareerStore((s) => s.cachedScopes[scope]);
+  const cachedDashboard = snapshot?.dashboard;
+  const dashboard = useMemo(
+    () =>
+      cachedDashboard
+        ? {
+            buckets: entriesToBuckets(cachedDashboard.heatmapEntries),
+            tokenBytes: cachedDashboard.tokenBytes,
+          }
+        : undefined,
+    [cachedDashboard]
+  );
+  const buckets = dashboard?.buckets ?? EMPTY_BUCKETS;
+  const tokenResult = tokenResults[scope];
+  const tokenDays = useMemo(() => {
+    const days = new Map<string, { input: number; output: number }>();
+    for (const entry of snapshot?.dailyTokens?.entries ?? []) {
+      const key = localDayKey(new Date(entry.ts * 1000));
+      const previous = days.get(key);
+      days.set(key, {
+        input: (previous?.input ?? 0) + entry.input_tokens,
+        output: (previous?.output ?? 0) + entry.output_tokens,
+      });
+    }
+    return days;
+  }, [snapshot?.dailyTokens]);
 
-  // Heatmap + stats — fetched on mount and whenever the refresh button bumps
-  // refreshKey, re-scanning disk for new sessions/messages.
+  useEffect(() => {
+    visitRef.current += 1;
+    if (activePage !== 'aiCareer') return;
+    let cancelled = false;
+    const explicit = useAiCareerStore.getState().refreshing;
+    const cached = useAiCareerStore.getState().cachedScopes[scope]?.dashboard;
+    Promise.all([aiCareerHeatmap(selectedFamily), aiCareerTokenBytes(selectedFamily)])
+      .then(([entries, tokenBytes]) => {
+        if (cancelled) return;
+        cacheDashboard(selectedFamily, entries, tokenBytes);
+        setFailedKey('');
+        setSettledKey(currentKey);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setFailedKey(explicit || !cached ? currentKey : '');
+        setSettledKey(currentKey);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePage, selectedFamily, scope, currentKey, cacheDashboard]);
+
+  useEffect(() => {
+    if (activePage !== 'aiCareer' || chartMetric !== 'tokens') return;
+    const requestKey = `${visitRef.current}::${currentKey}::${tokenRetry}`;
+    if (tokenRequestRef.current === requestKey) return;
+    tokenRequestRef.current = requestKey;
+    let cancelled = false;
+    let settled = false;
+    const explicit = useAiCareerStore.getState().refreshing || explicitTokenRetryRef.current;
+    explicitTokenRetryRef.current = false;
+    const cached = useAiCareerStore.getState().cachedScopes[scope]?.dailyTokens;
+    aiCareerDailyTokens(selectedFamily)
+      .then((data) => {
+        settled = true;
+        if (cancelled) return;
+        cacheDailyTokens(selectedFamily, data);
+        setTokenResults((previous) => ({
+          ...previous,
+          [scope]: { key: currentKey, failed: false },
+        }));
+      })
+      .catch(() => {
+        settled = true;
+        if (cancelled) return;
+        setTokenResults((previous) => ({
+          ...previous,
+          [scope]: { key: currentKey, failed: explicit || !cached },
+        }));
+      });
+    return () => {
+      cancelled = true;
+      if (!settled && tokenRequestRef.current === requestKey) tokenRequestRef.current = '';
+    };
+  }, [activePage, chartMetric, selectedFamily, scope, currentKey, tokenRetry, cacheDailyTokens]);
+
+  useEffect(() => {
+    if (
+      activePage === 'aiCareer' &&
+      settledKey === currentKey &&
+      (chartMetric === 'messages' || tokenResult?.key === currentKey)
+    )
+      setRefreshing(false);
+  }, [activePage, chartMetric, currentKey, settledKey, tokenResult?.key, setRefreshing]);
+
   useEffect(() => {
     let cancelled = false;
-    aiCareerHeatmap()
-      .then((entries) => {
-        if (!cancelled) setBuckets(entriesToBuckets(entries));
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setRefreshing(false);
-      });
-    aiCareerTokenBytes()
-      .then((b) => {
-        if (!cancelled) setTokenBytes(b);
+    getAvatar()
+      .then((value) => {
+        if (!cancelled) setAvatarUrl(value);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [refreshKey, setRefreshing]);
-
-  // Avatar — loaded once.
-  useEffect(() => {
-    getAvatar()
-      .then(setAvatarUrl)
-      .catch(() => {});
   }, []);
 
   const stats = useMemo(() => deriveStats(buckets), [buckets]);
-
   const handleEditAvatar = useCallback(async () => {
     try {
       const picked = await openDialog({
@@ -109,11 +171,11 @@ export function AiCareerMain() {
       await setAvatar(picked);
       setAvatarUrl(await getAvatar());
     } catch {
-      /* user cancelled or the file wasn't a decodable image */
+      // The picker was cancelled or the image could not be read.
     }
   }, []);
 
-  const estTokens = Math.round(tokenBytes * TOKENS_PER_BYTE);
+  const estTokens = Math.round((dashboard?.tokenBytes ?? 0) * TOKENS_PER_BYTE);
   const statCards: ReadonlyArray<{ label: string; value: string }> = [
     { label: t('aiCareer.stat.sessions'), value: formatCompact(stats.totalSessions) },
     { label: t('aiCareer.stat.messages'), value: formatCompact(stats.totalMessages) },
@@ -123,74 +185,101 @@ export function AiCareerMain() {
   ];
 
   return (
-    <div className="max-w-3xl mx-auto min-h-full flex flex-col items-center justify-center gap-10 py-2">
-      {/* Avatar — defaults to the app icon; click the avatar itself to pick a
-          local image (stored as ~/.echobird/avatar.png). No edit-icon / tooltip
-          chrome by design; a subtle hover dim hints it's clickable. */}
-      <button type="button" onClick={handleEditAvatar} className="group cursor-pointer">
-        <div className="w-40 h-40 rounded-full overflow-hidden border border-cyber-border/60 bg-cyber-surface flex items-center justify-center transition-opacity group-hover:opacity-85">
-          <img
-            src={avatar || DEFAULT_AVATAR}
-            alt=""
-            className="w-full h-full object-cover"
-            onError={(e) => {
-              const img = e.currentTarget;
-              if (!img.src.endsWith('/brand/bird.png')) img.src = '/brand/bird.png';
-            }}
-          />
-        </div>
-      </button>
+    <div
+      key={scope}
+      className="min-w-0 min-h-0 flex-1 overflow-y-auto slim-scroll pr-1 cursor-default"
+    >
+      <div
+        className={
+          'max-w-3xl mx-auto min-h-full flex flex-col items-center gap-8 py-2 ' +
+          (selectedFamily === null ? 'justify-center' : '')
+        }
+      >
+        {selectedFamily === null && (
+          <button type="button" onClick={handleEditAvatar} className="group flex-shrink-0">
+            <div className="w-40 h-40 rounded-full overflow-hidden border border-cyber-border/60 bg-cyber-surface flex items-center justify-center transition-opacity group-hover:opacity-85">
+              <img
+                src={avatar || DEFAULT_AVATAR}
+                alt={t('aiCareer.editAvatar')}
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  const img = e.currentTarget;
+                  if (!img.src.endsWith('/brand/bird.png')) img.src = '/brand/bird.png';
+                }}
+              />
+            </div>
+          </button>
+        )}
 
-      {/* Five activity stats */}
-      <div className="grid grid-cols-5 gap-3 w-full">
-        {statCards.map((c) => (
-          <div
-            key={c.label}
-            className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-cyber-border/40 bg-cyber-surface px-2 py-4"
-          >
-            <span className="text-3xl font-bold text-cyber-text tabular-nums">{c.value}</span>
-            <span className="text-xs text-cyber-text-secondary text-center leading-tight">
-              {c.label}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* Contribution heatmap — full row width, lines up with the stats above */}
-      <div className="w-full">
-        <ContributionHeatmap buckets={buckets} />
-      </div>
-
-      {/* Family cards — 3 per row, inheriting the Model Nexus / App Manager
-          grid rhythm. Selecting one drives the right-side session list. */}
-      <div className="grid grid-cols-3 gap-3 w-full">
-        {FAMILIES.map((f) => {
-          const selected = selectedFamily === f.id;
-          return (
+        {failedKey === currentKey && (
+          <div role="alert" className="w-full flex items-center justify-between gap-3 text-sm">
+            <span className="text-cyber-text-secondary">{t('aiCareer.statsLoadFailed')}</span>
             <button
-              key={f.id}
               type="button"
-              onClick={() => setSelectedFamily(f.id)}
-              className={`flex items-center gap-2.5 p-4 border bg-cyber-surface rounded-card transition-colors ${
-                selected ? 'border-cyber-accent' : 'border-transparent hover:bg-cyber-elevated'
-              }`}
+              onClick={refresh}
+              className="px-3 py-1.5 rounded-md border border-cyber-border text-cyber-text"
             >
-              <FamilyIcon icon={f.icon} name={f.name} />
-              {/* Match the left-nav label: 15px / medium weight, all in the
-                  primary cream — the same "white" as the sidebar tool names. */}
-              <span className="text-[15px] font-medium whitespace-nowrap text-cyber-text">
-                {f.name} {t('aiCareer.familySuffix')}
-              </span>
+              {t('aiCareer.retry')}
             </button>
-          );
-        })}
+          </div>
+        )}
+
+        <div className="grid grid-cols-5 gap-3 w-full flex-shrink-0">
+          {statCards.map((card) => (
+            <div
+              key={card.label}
+              className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-cyber-border/40 bg-cyber-surface px-2 py-4"
+            >
+              <span className="text-3xl font-bold text-cyber-text tabular-nums">
+                {dashboard ? card.value : '—'}
+              </span>
+              <span className="text-xs text-cyber-text-secondary text-center leading-tight">
+                {card.label}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {selectedFamily === null && (
+          <div className="w-full flex-shrink-0 -mb-2">
+            <ContributionHeatmap buckets={buckets} refreshKey={refreshKey} />
+          </div>
+        )}
+        <div className="w-full flex-shrink-0">
+          {activePage === 'aiCareer' && (
+            <DailyActivityChart
+              buckets={buckets}
+              metric={chartMetric}
+              onMetricChange={setChartMetric}
+              tokenDays={tokenDays}
+              tokenStatus={
+                chartMetric !== 'tokens'
+                  ? 'idle'
+                  : tokenResult?.key === currentKey && tokenResult.failed
+                    ? 'error'
+                    : snapshot?.dailyTokens
+                      ? 'ready'
+                      : 'loading'
+              }
+              onTokenRetry={() => {
+                explicitTokenRetryRef.current = true;
+                setTokenResults((previous) => ({
+                  ...previous,
+                  [scope]: { key: '', failed: false },
+                }));
+                setTokenRetry((previous) => previous + 1);
+              }}
+            />
+          )}
+        </div>
+        {selectedFamily !== null && activePage === 'aiCareer' && (
+          <AiCareerPanel key={selectedFamily} family={selectedFamily} />
+        )}
       </div>
     </div>
   );
 }
 
-// Title-bar refresh button (rendered by App.tsx in the page-title actions
-// slot). Bumps the store's refreshKey to re-scan.
 export function AiCareerTitleActions() {
   const { t } = useI18n();
   const refresh = useAiCareerStore((s) => s.refresh);
@@ -200,11 +289,12 @@ export function AiCareerTitleActions() {
       type="button"
       onClick={refresh}
       disabled={refreshing}
-      className={`text-sm px-3 py-1.5 border rounded-md transition-colors flex items-center gap-2 ${
-        !refreshing
+      className={
+        'text-sm px-3 py-1.5 border rounded-md transition-colors flex items-center gap-2 ' +
+        (!refreshing
           ? 'border-cyber-border/50 text-cyber-text hover:bg-cyber-text/10'
-          : 'border-cyber-border text-cyber-text-muted cursor-not-allowed'
-      }`}
+          : 'border-cyber-border text-cyber-text-muted')
+      }
     >
       <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
       {t('btn.refresh')}

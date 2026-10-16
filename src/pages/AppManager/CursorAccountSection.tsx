@@ -2,7 +2,6 @@ import React from 'react';
 import { useAppManager } from './context';
 import { AccountSectionButton, AccountSectionRow } from './AccountSectionPrimitives';
 import { QuotaCountdown } from './QuotaCountdown';
-import { isFreePlan } from './accountPlanLabel';
 
 export const CursorAccountSection: React.FC<{ tool: 'cursor' | 'grokbot' }> = ({ tool }) => {
   const { cursorAccounts, grokBotAccounts, isLaunching } = useAppManager();
@@ -45,9 +44,7 @@ export const CursorAccountSection: React.FC<{ tool: 'cursor' | 'grokbot' }> = ({
             onSelect={() => select(account.id)}
             onDelete={() => void remove(account)}
             secondary={
-              isFreePlan(account.usage?.plan) &&
-              account.usage?.remainingPercent == null &&
-              account.usage?.resetAt == null ? undefined : (
+              account.usage?.remainingPercent == null ? undefined : (
                 <span className="flex h-[16px] items-center justify-between">
                   <span
                     role="progressbar"

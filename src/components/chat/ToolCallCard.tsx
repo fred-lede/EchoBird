@@ -30,6 +30,8 @@ const TOOL_META: Record<string, { icon: LucideIcon; label: string; previewKey?: 
   shell_exec: { icon: Terminal, label: 'shell', previewKey: 'command' },
   ssh_shell: { icon: Terminal, label: 'ssh', previewKey: 'command' },
   file_read: { icon: FileText, label: 'read', previewKey: 'path' },
+  tool_output_read: { icon: FileText, label: 'read output' },
+  conversation_history_read: { icon: FileText, label: 'read history' },
   file_write: { icon: FileEdit, label: 'write', previewKey: 'path' },
   web_fetch: { icon: Globe, label: 'fetch', previewKey: 'url' },
   upload_file: { icon: Upload, label: 'upload', previewKey: 'remote_path' },

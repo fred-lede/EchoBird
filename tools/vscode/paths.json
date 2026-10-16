@@ -1,15 +1,15 @@
 {
     "name": "Visual Studio Code",
     "category": "IDE",
-    "noModelConfig": true,
     "apiProtocol": [
-        "openai"
+        "openai",
+        "anthropic"
     ],
     "docs": "https://code.visualstudio.com/docs/setup/setup-overview",
     "website": "https://code.visualstudio.com/",
     "command": "code",
-    "configDir": "~/.vscode",
-    "configFile": "~/.vscode/settings.json",
+    "configDir": "~/.config/Code/User",
+    "configFile": "~/.config/Code/User/settings.json",
     "requireConfigFile": false,
     "paths": {
         "win32": [

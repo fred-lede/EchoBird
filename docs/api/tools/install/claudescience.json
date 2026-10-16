@@ -11,23 +11,23 @@
         "macos_download_x64": "https://downloads.claude.ai/claude-science/latest/mac-x64.dmg",
         "linux_curl": "mkdir -p ~/.local/bin && curl -fL https://downloads.claude.ai/claude-science/latest/linux-x64 -o ~/.local/bin/claude-science && chmod +x ~/.local/bin/claude-science",
         "linux_download": "https://downloads.claude.ai/claude-science/latest/linux-x64",
-        "note": "Claude Science supports Windows x64, macOS and Linux x64. After install, launch with `claude-science serve` — it starts the local daemon and opens the web UI in the browser. Science requires a Claude account login on first launch; EchoBird does not manage models or login for it (Science uses the user's own Claude subscription)."
+        "note": "Claude Science supports Windows x64, macOS and Linux x64. EchoBird starts its local daemon in the background and opens the UI in the default browser. EchoBird can apply an Anthropic-compatible model or restore official Claude login from App Desktop."
     },
     "install_flow": {
-        "summary": "Download the platform build, complete first-run installation on Windows, place the binary on PATH (Linux) or /Applications (macOS), then launch with `claude-science serve`.",
+        "summary": "Download the platform build, complete first-run installation on Windows, place the binary on PATH (Linux) or /Applications (macOS), then launch it from EchoBird.",
         "agent_steps": [
             "Detect OS and architecture first. The official Windows build is x64; do not offer it on Windows ARM64.",
             "Windows x64: download https://downloads.claude.ai/claude-science/latest/windows-x64.exe to the user's Downloads folder as ClaudeScienceSetup.exe, then open it and let the user finish the first-run installation. Do not invent silent flags. The default installed binary is `%LOCALAPPDATA%\\Programs\\ClaudeScience\\claude-science.exe`.",
             "macOS (Apple Silicon): download https://downloads.claude.ai/claude-science/latest/mac-arm64.dmg, mount it, drag Claude Science.app to /Applications.",
             "macOS (Intel): download https://downloads.claude.ai/claude-science/latest/mac-x64.dmg, same steps.",
             "Linux x64: run `mkdir -p ~/.local/bin && curl -fL https://downloads.claude.ai/claude-science/latest/linux-x64 -o ~/.local/bin/claude-science && chmod +x ~/.local/bin/claude-science` (ensure ~/.local/bin is on PATH; create it if missing).",
-            "After install, tell the user to launch with `claude-science serve` in a terminal — it starts the daemon and opens the web UI. First launch requires Claude account login.",
-            "EchoBird lists Claude Science as a tool card (Science category, 'no model config supported') — it does NOT switch models for Science. Science uses the user's own Claude subscription."
+            "After install, launch Claude Science from EchoBird; its local daemon starts in the background and the UI opens in the default browser. First launch requires Claude account login.",
+            "EchoBird can apply an Anthropic-compatible model for Claude Science from App Desktop. Choose Anthropic Official to return to the native Claude login."
         ],
         "tell_user": [
             "Which build was installed (Windows x64, macOS arm64/x64, or Linux x64)",
             "Install location (%LOCALAPPDATA%\\Programs\\ClaudeScience on Windows; /Applications/Claude Science.app on macOS; ~/.local/bin/claude-science on Linux)",
-            "How to launch: `claude-science serve` in a terminal",
+            "How to launch: select Claude Science in EchoBird and click Start App",
             "Whether the app opened and first sign-in remains for the user"
         ]
     },

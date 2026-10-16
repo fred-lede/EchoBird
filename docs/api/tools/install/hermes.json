@@ -7,29 +7,31 @@
     "kind": "desktop_app",
     "platforms": ["windows", "macos", "linux"],
     "install": {
-        "summary": "For Hermes Desktop on Windows/macOS, prefer the official desktop installer. Plain install.ps1 / install.sh installs the CLI; include the desktop flag when the GUI is required.",
-        "windows_download": "Download the Windows installer linked at https://hermes-agent.nousresearch.com/desktop and run it. It provisions the CLI and desktop app.",
-        "macos_download": "Download the macOS installer linked at https://hermes-agent.nousresearch.com/desktop (macOS 12+).",
+        "summary": "For Hermes Desktop, distinguish complete signed desktop bundles from source bootstrap installers. Windows 11 22H2+ supports the MSIX/App Installer bundle; macOS stable bundles target Apple Silicon. Plain install.ps1 / install.sh installs the CLI; include the desktop flag when building the GUI from source.",
+        "windows_download": "On Windows 11 22H2 or later, download https://hermes-assets.nousresearch.com/releases/win32/stable/stable.appinstaller and open it with Windows App Installer. It installs the signed universal MSIX bundle with its runtime and records its update source. The Microsoft Store variant has separate Store update ownership.",
+        "macos_download": "For Apple Silicon on macOS 12+, read https://hermes-assets.nousresearch.com/releases/darwin/stable/stable-mac.yml and download its current arm64 .dmg, resolving a relative artifact URL against https://hermes-assets.nousresearch.com. Copy the included Hermes Agent.app to Applications. Use the feed's actual version; the GitHub latest source tag can be newer than the published desktop bundle.",
+        "bootstrap_download": "The product page at https://hermes-agent.nousresearch.com/desktop may still link Hermes-Setup.exe or Hermes-Setup.dmg. These bootstrap a source checkout and build Desktop; they are not the complete MSIX/DMG bundle. Do not describe bootstrap first launch as an offline prebuilt installation.",
         "windows_script_with_desktop": "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -IncludeDesktop",
         "unix_script_with_desktop": "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --include-desktop",
         "windows_cli_only": "iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
         "unix_cli_only": "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
         "existing_cli_to_desktop": "hermes desktop",
-        "note": "The official bootstrapper provisions its own dependencies. Their versions and layout vary by platform; do not force Node 22 or skip managed uv based on an unrelated system installation. Non-Windows script installs need Git; Linux also needs curl and xz-utils, plus g++ / build-essential for desktop native modules. Desktop builds and later browser-tool downloads still depend on their upstream hosts. Fetching the first script does not prove every download will succeed."
+        "note": "The official source bootstrapper verifies its uv pin and delegates Python, Node.js, npm and other tool versions to PM; do not replace its managed runtime with unrelated system installations. POSIX source installs need Git, curl, tar and SHA-256 utilities; desktop source builds also need the platform's compiler/native-module prerequisites. Windows can provision its own verified Git archive. Complete desktop bundles already contain the base runtime and prebuilt interfaces. Optional browser/computer-use downloads still need their upstream hosts; a failed optional download can leave the base install successful and print a retry command. Data remains under HERMES_HOME when set, otherwise %LOCALAPPDATA%\\hermes on Windows and ~/.hermes on macOS/Linux; MSIX does not move it into a private package data directory."
     },
     "cli": {
         "detect_command": "hermes --version",
-        "note": "The CLI and Desktop are separate verification targets. `hermes desktop` builds and launches the GUI from an existing CLI installation."
+        "note": "The CLI and Desktop are separate verification targets. A CLI command or data directory does not prove Desktop is installed. `hermes desktop` builds and launches the GUI from a source installation, or launches the containing app from a complete bundled installation. Windows MSIX exposes hermes, hermes-agent and hermes-acp execution aliases."
     },
     "install_flow": {
-        "summary": "Use the desktop installer or a script with the desktop flag → verify CLI and desktop separately.",
+        "summary": "Choose the platform's supported desktop bundle or a source script with the desktop flag, then verify CLI and Desktop separately.",
         "agent_steps": [
-            "Detect the target OS and architecture. Install a GUI on a machine with a desktop session; a requested headless server install uses the CLI-only path.",
-            "Windows/macOS: prefer the official desktop installer linked from the product page. Tell the user its download path and open it for them. Windows script alternative: use the scriptblock command with -IncludeDesktop; appending the flag to iex does not pass it to the downloaded script.",
-            "Linux: check Git, curl, xz-utils and the desktop compiler prerequisites, then use install.sh with --include-desktop. For an existing CLI install, `hermes desktop` builds and launches the GUI.",
+            "Detect the target OS, architecture and Windows version. Install a GUI on a machine with a desktop session; a requested headless server install uses the CLI-only path. Stable macOS desktop bundles are Apple Silicon only. Intel macOS is outside the official support matrix; its CLI/source desktop path is best-effort and must not be presented as a supported stable bundle.",
+            "Windows 11 22H2+: prefer the official stable .appinstaller descriptor. Windows 10: use the source script with -IncludeDesktop instead; MSIX does not support Windows 10. For script arguments, use the scriptblock command, because appending a flag to iex does not pass it to the downloaded script. Source installation has separate -HermesHome and -InstallDir options.",
+            "macOS Apple Silicon: read the official stable-mac.yml feed, download its matching DMG, tell the user its download path and open it for them. Copy the bundled app to Applications. A Hermes-Setup.dmg from the product page is the separate source bootstrap method.",
+            "Linux: no stable desktop package is currently published by the release workflow. Check the POSIX source and desktop compiler prerequisites, then use install.sh with --include-desktop. For an existing source CLI install, `hermes desktop` builds and launches the GUI. --dir selects the source checkout independently of HERMES_HOME.",
             "Inspect the installer result. If it fails, report the failing host or stage and use the user’s proxy or an approved package mirror for that dependency. Keep the official bootstrapper and its managed dependency layout. Do not replace repository URLs globally or choose an arbitrary GitHub proxy.",
-            "Verify `hermes --version`. If Desktop was requested, also verify its application entry or built desktop artifact exists and opens; a CLI version alone does not confirm Desktop installation.",
-            "Report the actual installed location and launch command (`hermes desktop` for the GUI)."
+            "Verify `hermes --version` in a fresh shell so the source launcher or MSIX aliases are visible. If Desktop was requested, separately verify the registered MSIX application, installed macOS app or built desktop artifact exists and opens; a CLI version alone does not confirm Desktop installation.",
+            "Report the actual installation method, installed location and desktop launch entry. Preserve its update owner: MSIX uses App Installer, Store uses Microsoft Store, macOS bundles use the app updater, and source checkouts use hermes update. Do not run Git updates or rebuild files inside a bundled app."
         ],
         "tell_user": [
             "Install method and actual location",
@@ -40,6 +42,7 @@
     "network_requirements": {
         "test_urls": [
             "https://hermes-agent.nousresearch.com",
+            "https://hermes-assets.nousresearch.com",
             "https://github.com/NousResearch/hermes-agent",
             "https://astral.sh",
             "https://nodejs.org"

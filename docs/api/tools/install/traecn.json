@@ -1,0 +1,43 @@
+{
+    "id": "traecn",
+    "displayName": "TRAE CN",
+    "homepage": "https://www.trae.cn/",
+    "docs": "https://docs.trae.cn/ide_models",
+    "kind": "desktop_app",
+    "platforms": ["windows", "macos", "linux"],
+    "install": {
+        "version_manifest": "https://api.trae.cn/icube/api/v1/native/version/trae/cn/latest",
+        "version_manifest_fallback": "https://api.trae.ai/icube/api/v1/native/version/trae/cn/latest",
+        "windows_download": "Read data.manifest.win32.download from the current official CN version manifest and select the nonempty x64 URL for the user's region.",
+        "macos_download": "Read data.manifest.darwin.download and select apple for Apple Silicon or intel for an Intel Mac.",
+        "linux_download": "Read data.manifest.linux.download and select x64.deb / arm64.deb or x64.rpm / arm64.rpm for the system's architecture and package manager.",
+        "note": "The current China-region TRAE combines Agent and IDE modes. Use data.manifest from the /trae/cn/latest endpoint, not the separate data.solo workplace product or data.tob enterprise product. Always resolve the current download URL; never pin an old version or install the international edition as a fallback."
+    },
+    "install_flow": {
+        "summary": "Detect installation and platform -> resolve the latest official CN package -> download -> install -> verify the regional desktop executable.",
+        "agent_steps": [
+            "Detect existing TRAE CN, OS, architecture and OS version first. Do not reinstall a working desktop client. Windows: registry DisplayName exactly Trae CN or Trae-CN; default %LOCALAPPDATA%\\Programs\\Trae CN\\Trae CN.exe. macOS: /Applications/Trae CN.app or ~/Applications/Trae CN.app. Linux: /usr/share/trae-cn/trae-cn, /usr/bin/trae-cn and trae-cn.desktop.",
+            "Fetch install.version_manifest as JSON over HTTPS; if unavailable, use install.version_manifest_fallback, which serves the same CN product. Require success=true and data.manifest; use only its win32, darwin or linux download array. Windows supports x64; macOS supports apple (arm64) and intel (x64); Linux supports x64 and arm64. If the current manifest has no matching architecture, report that limitation. macOS requires 12.0 or later; Windows requires Windows 10 or later.",
+            "Select a nonempty architecture URL in the CN product's download array. Prefer region=cn for mainland China, va for the Americas and sg elsewhere, then another available official region for the same CN edition. Require HTTPS and an official trae.ai, trae.com.cn or traecdn.us download host. Download to the user's Downloads directory using a native download command. Do not use data.solo or data.tob. If both manifests fail, recheck https://www.trae.cn/download for the current official manifest; do not guess a versioned package URL.",
+            "Windows x64: verify the downloaded installer's Authenticode signature. Install automatically with Start-Process -FilePath <installer> -ArgumentList '/VERYSILENT', '/NORESTART', '/MERGETASKS=!runcode' -WindowStyle Hidden -Wait -PassThru. Check the exit code and resolve Trae CN.exe through the registry. If interactive setup is required, report the remaining step and do not claim installation succeeded.",
+            "macOS: mount the downloaded DMG read-only with hdiutil attach -readonly -nobrowse. Locate Trae CN.app in the mounted volume, copy it to ~/Applications using ditto, then detach the volume. Verify its code signature, Gatekeeper assessment and Contents/Info.plist executable before launching. Preserve an existing installation's location when updating.",
+            "Linux: install the matching downloaded .deb with apt or .rpm with dnf / zypper. Confirm package-manager success, /usr/share/trae-cn/trae-cn and the trae-cn.desktop entry. Do not install a package built for another architecture. If the distribution has no compatible package manager, report the limitation.",
+            "Refresh EchoBird tool detection and verify it resolves the installed TRAE CN desktop executable. Launch through EchoBird's normal desktop entry. Report the installed version and full application path; a completed download alone does not establish installation."
+        ],
+        "tell_user": [
+            "Installed regional desktop version and full application path, or the exact remaining installation step.",
+            "The desktop client is available from EchoBird's TRAE CN entry."
+        ]
+    },
+    "identity_guard": {
+        "description": "TRAE CN (traecn) is the China-region desktop client from trae.cn. Its manifest uses TRAE_CN-* packages and its native application is Trae CN / trae-cn. It combines Agent and IDE modes and uses account and application data independent of international TRAE."
+    },
+    "network_requirements": {
+        "test_urls": [
+            "https://www.trae.cn/download",
+            "https://api.trae.cn/icube/api/v1/native/version/trae/cn/latest",
+            "https://api.trae.ai/icube/api/v1/native/version/trae/cn/latest"
+        ],
+        "mirrors": {}
+    }
+}

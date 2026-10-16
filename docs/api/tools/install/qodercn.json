@@ -1,0 +1,41 @@
+{
+    "id": "qodercn",
+    "displayName": "Qoder CN",
+    "homepage": "https://qoder.com.cn/download?product=qoder",
+    "docs": "https://docs.qoder.com/qoder/quickstart",
+    "kind": "desktop_app",
+    "platforms": ["windows", "macos", "linux"],
+    "install": {
+        "windows_download": "https://qoder-app.oss-cn-beijing.aliyuncs.com/qoder-app/releases/latest/Qoder-CN-win-x64-user.exe",
+        "windows_system_download": "https://qoder-app.oss-cn-beijing.aliyuncs.com/qoder-app/releases/latest/Qoder-CN-win-x64-system.exe",
+        "macos_arm64_download": "https://qoder-app.oss-cn-beijing.aliyuncs.com/qoder-app/releases/latest/Qoder-CN-Installer-mac-arm64.zip",
+        "macos_x64_download": "https://qoder-app.oss-cn-beijing.aliyuncs.com/qoder-app/releases/latest/Qoder-CN-Installer-mac-x64.zip",
+        "linux_deb_download": "https://qoder-app.oss-cn-beijing.aliyuncs.com/qoder-app/releases/latest/Qoder-CN-linux-amd64.deb",
+        "linux_rpm_download": "https://qoder-app.oss-cn-beijing.aliyuncs.com/qoder-app/releases/latest/Qoder-CN-linux-x86_64.rpm",
+        "note": "Installs the independent Qoder CN desktop application. Existing matching CN IDE installations remain supported as a detection and account-switching fallback; the default download is the standalone desktop product. Current Windows and Linux downloads are x64; macOS provides x64 and arm64. Check current official system requirements and package metadata before installing; the international edition is not an installation fallback."
+    },
+    "install_flow": {
+        "summary": "Detect product, China edition, OS and architecture -> resolve the standalone desktop package -> verify and install -> refresh detection.",
+        "agent_steps": [
+            "Check the existing installation, OS and architecture. Prefer the standalone Qoder CN desktop client when present. Preserve its location when updating. Do not overwrite an installed international edition or replace an existing CN IDE with a different product.",
+            "Use the matching official stable URL in install. If it changes, read https://qoder.com.cn/download?product=qoder and resolve the independent desktop product's current download link. Require HTTPS and the official matching CN product package; do not guess versioned URLs or use the CN IDE download as an installation fallback. Save the package to the user's Downloads directory.",
+            "Windows x64: verify Authenticode and installer identity, then run the NSIS installer with Start-Process -FilePath <installer> -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru. Check its exit code. Resolve the registry's versioned DisplayName 'Qoder CN <version>' and installed executable, normally %LOCALAPPDATA%\\Programs\\Qoder CN\\Qoder CN.exe or %PROGRAMFILES%\\Qoder CN\\Qoder CN.exe. Inspect resources/product.json after installation; do not treat the uninstaller icon or bootstrap launcher as the client executable. If setup needs interaction, report the remaining step without claiming success.",
+            "macOS: select the matching architecture's Installer ZIP. Extract it without running the installer and read Contents/Resources/installer-manifest.json. Use only qoderArtifact: require expectedApplicationId 'com.qodercn.app' and expectedBundleName 'Qoder CN.app', locate the embedded Resources/payload/<fileName> ZIP, and verify its SHA256 against the manifest. Extract that payload, verify the Info.plist bundle identifier/executable and Resources/product.json, then copy Qoder CN.app to ~/Applications with ditto. Verify its code signature and Gatekeeper assessment before launch. Preserve an existing application's location when updating. Do not run the installer to install the optional ideArtifact; the Installer.app wrapper alone is not the installed product.",
+            "Linux x64: inspect the matching .deb / .rpm package identity 'qoder-cn' and architecture. Install with apt or dnf / zypper as appropriate. Check package-manager success, /opt/Qoder CN/qoder-cn and the qoder-cn.desktop entry; validate resources/product.json. If the current official package is unavailable for the architecture or distribution, report that limitation.",
+            "Refresh EchoBird detection and require resources/product.json to contain productId 'qoder-cn', appId 'com.qodercn.app', dataDirectoryName 'com.qodercn.app.stable' and protocolScheme 'qoder-cn'. Verify the installed version and full executable path. Launch through the normal desktop entry only after installation verification; a completed download is insufficient."
+        ],
+        "tell_user": [
+            "Installed standalone CN desktop version and full path, or the exact remaining installation step."
+        ]
+    },
+    "first_run": {
+        "note": "Initialize the installed Qoder CN client once so its protected account storage exists, then close it before applying an account in EchoBird. Saving an account does not automatically switch a client or query quota. International accounts and application data are independent."
+    },
+    "identity_guard": {
+        "description": "This entry prefers the independent Qoder CN desktop application identified by com.qodercn.app and com.qodercn.app.stable. Matching CN IDE products remain supported when no standalone client is installed, with separate native account storage. Classify by verified product metadata, rather than folder names or update hosts, and never accept a standalone Installer.app wrapper as the client."
+    },
+    "network_requirements": {
+        "test_urls": ["https://qoder.com.cn/download?product=qoder", "https://qoder-app.oss-cn-beijing.aliyuncs.com/qoder-app/releases/latest/"],
+        "mirrors": {}
+    }
+}

@@ -42,7 +42,13 @@ pub(crate) fn migrate_local_proxy_port(old: u16, new: u16) -> Result<(), String>
     if let Ok(dir) = mimodesktop::config_dir() {
         paths.extend(mimodesktop::CONFIG_NAMES.iter().map(|name| dir.join(name)));
     }
-    migrate_paths(paths, errors, old, new)
+    let paths_result = migrate_paths(paths, errors, old, new);
+    let muse_result = super::musecode::migrate_proxy_port(old, new);
+    match (paths_result, muse_result) {
+        (Err(paths), Err(muse)) => Err(format!("{paths}; {muse}")),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        _ => Ok(()),
+    }
 }
 
 fn migrate_paths(
@@ -82,7 +88,17 @@ mod tests {
             .unwrap();
         let other_client = root.join("other.json");
         std::fs::write(&other_client, r#"{"baseUrl":"http://localhost:14565/v1"}"#).unwrap();
-        assert!(migrate_paths(vec![other_client.clone()], vec![error], 14565, 14566).is_err());
+        let failed_client = root.join("blocked.json");
+        std::fs::create_dir(&failed_client).unwrap();
+        let combined = migrate_paths(
+            vec![other_client.clone(), failed_client],
+            vec![error.clone()],
+            14565,
+            14566,
+        )
+        .unwrap_err();
+        assert!(combined.contains(&error));
+        assert!(combined.contains("blocked.json"));
         assert!(std::fs::read_to_string(&other_client)
             .unwrap()
             .contains("localhost:14566/v1"));

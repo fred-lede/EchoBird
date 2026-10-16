@@ -3,13 +3,18 @@ import { AntigravityAccountSection } from './AntigravityAccountSection';
 import { AccountSectionButton, AccountSectionRow } from './AccountSectionPrimitives';
 import { DeepSeekAccountSection } from './DeepSeekAccountSection';
 import { GrokAccountSection } from './GrokAccountSection';
+import { ClientAccountSection } from './ClientAccountSection';
+import { ClineAccountSection } from './ClineAccountSection';
 import { ManusAccountSection } from './ManusAccountSection';
 import { ModelSwitchDivider } from './ModelSwitchDivider';
 import { QuotaCountdown } from './QuotaCountdown';
 import { codexPlanLabel } from './codexPlanLabel';
-import { isFreePlan } from './accountPlanLabel';
 import { WorkBuddyAccountSection } from './WorkBuddyAccountSection';
+import { TraeAccountSection } from './TraeAccountSection';
+import { KiroAccountSection } from './KiroAccountSection';
 import { ZCodeAccountSection } from './ZCodeAccountSection';
+import { MinimaxAccountSection } from './MinimaxAccountSection';
+import { QoderAccountSection } from './QoderAccountSection';
 import { ClaudeCodeAccountSection } from './ClaudeCodeAccountSection';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { RoutingToggle } from '../../components/RoutingToggle';
@@ -67,7 +72,7 @@ export const AppManagerTitleActions: React.FC = () => {
           void api.openToolPathsConfig().catch(() => {});
         }}
         aria-label={t('btn.editPaths')}
-        className="flex items-center justify-center w-9 h-9 border border-cyber-border/50 rounded-md text-cyber-text-secondary hover:text-cyber-text hover:bg-cyber-text/10 transition-colors outline-none"
+        className="flex items-center justify-center w-9 h-9 border border-cyber-border/50 rounded-md text-cyber-text hover:bg-cyber-text/10 transition-colors outline-none"
       >
         <Settings size={16} />
       </button>
@@ -506,54 +511,53 @@ export const AppManagerMain: React.FC = () => {
           ))}
         </div>
       ) : (
-        <div key={viewMode} className="flex-1 overflow-y-auto">
-          {/* Installed — flat draggable grid, no section header (per spec) */}
-          {viewMode === 'desktop' && installedOrdered.length > 0 && <div>{sortableGrid}</div>}
-
+        <div key={viewMode} className="flex min-h-0 flex-1 flex-col">
           {/* Install view — category tabs filter the uninstalled apps. */}
           {viewMode === 'install' && uninstalled.length > 0 && (
-            <section>
-              <div ref={categoryTabsRef} className="relative mb-5 flex flex-wrap gap-1">
+            <div ref={categoryTabsRef} className="relative mb-5 flex shrink-0 flex-wrap gap-1">
+              <button
+                onClick={() => setActiveUninstalledCat('ALL')}
+                aria-pressed={activeUninstalledCat === 'ALL'}
+                className={`border-b-2 border-transparent px-3 py-1.5 text-[14px] font-bold transition-colors outline-none ${
+                  activeUninstalledCat === 'ALL'
+                    ? 'text-cyber-text'
+                    : 'text-cyber-text-secondary hover:text-cyber-text'
+                }`}
+              >
+                {t('toolCat.all')}
+              </button>
+              {uninstalledCats.map((cat) => (
                 <button
-                  onClick={() => setActiveUninstalledCat('ALL')}
-                  aria-pressed={activeUninstalledCat === 'ALL'}
+                  key={cat}
+                  onClick={() => setActiveUninstalledCat(cat)}
+                  aria-pressed={activeUninstalledCat === cat}
                   className={`border-b-2 border-transparent px-3 py-1.5 text-[14px] font-bold transition-colors outline-none ${
-                    activeUninstalledCat === 'ALL'
+                    activeUninstalledCat === cat
                       ? 'text-cyber-text'
                       : 'text-cyber-text-secondary hover:text-cyber-text'
                   }`}
                 >
-                  {t('toolCat.all')}
+                  {t(catLabelKey(cat))}
                 </button>
-                {uninstalledCats.map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setActiveUninstalledCat(cat)}
-                    aria-pressed={activeUninstalledCat === cat}
-                    className={`border-b-2 border-transparent px-3 py-1.5 text-[14px] font-bold transition-colors outline-none ${
-                      activeUninstalledCat === cat
-                        ? 'text-cyber-text'
-                        : 'text-cyber-text-secondary hover:text-cyber-text'
-                    }`}
-                  >
-                    {t(catLabelKey(cat))}
-                  </button>
-                ))}
-                <span
-                  ref={categoryUnderlineRef}
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-0 top-0 h-0.5 bg-cyber-border transition-[transform,width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
-                  style={{ visibility: 'hidden' }}
-                />
-              </div>
-              {sortableGrid}
-            </section>
+              ))}
+              <span
+                ref={categoryUnderlineRef}
+                aria-hidden="true"
+                className="pointer-events-none absolute left-0 top-0 h-0.5 bg-cyber-border transition-[transform,width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+                style={{ visibility: 'hidden' }}
+              />
+            </div>
           )}
-          {(viewMode === 'desktop' ? installed.length === 0 : uninstalled.length === 0) && (
-            <p className="py-12 text-center text-sm text-cyber-text-secondary">
-              {t(viewMode === 'desktop' ? 'aiDesktop.emptyDesktop' : 'aiDesktop.emptyInstall')}
-            </p>
-          )}
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {/* Installed — flat draggable grid, no section header (per spec) */}
+            {viewMode === 'desktop' && installedOrdered.length > 0 && <div>{sortableGrid}</div>}
+            {viewMode === 'install' && uninstalled.length > 0 && <section>{sortableGrid}</section>}
+            {(viewMode === 'desktop' ? installed.length === 0 : uninstalled.length === 0) && (
+              <p className="py-12 text-center text-sm text-cyber-text-secondary">
+                {t(viewMode === 'desktop' ? 'aiDesktop.emptyDesktop' : 'aiDesktop.emptyInstall')}
+              </p>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -587,9 +591,7 @@ function isModelCompatibleWithTool(
   selectedTool: string | null
 ): boolean {
   const requiresResponses = selectedTool === 'codex' || selectedTool === 'chatgptdesktop';
-  const isChatOnlyLocalEndpoint =
-    model.internalId === 'local-server' || model.internalId === 'smart-router';
-  if (requiresResponses && isChatOnlyLocalEndpoint) return false;
+  if (requiresResponses && model.internalId === 'local-server') return false;
 
   const hasOpenAI = toolProtocols.includes('openai') && !!model.baseUrl;
   const hasAnthropic = toolProtocols.includes('anthropic') && !!model.anthropicUrl;
@@ -738,6 +740,12 @@ export const ModelListSection: React.FC<ModelListSectionProps> = ({
     selectedTool === 'chatgptdesktop' ||
     selectedTool === 'claudecode' ||
     selectedTool === 'grok' ||
+    selectedTool === 'cline' ||
+    selectedTool === 'clinedesktop' ||
+    selectedTool === 'kilo' ||
+    selectedTool === 'kilodesktop' ||
+    selectedTool === 'copilot' ||
+    selectedTool === 'copilotdesktop' ||
     selectedTool === 'workbuddy' ||
     selectedTool === 'workbuddyai';
   const official =
@@ -889,7 +897,7 @@ export const CodexAccountSection: React.FC<{ showDivider?: boolean }> = ({
                 widePlan={planLabel.length >= 8}
                 planPrefix={
                   account.subscriptionEndAt ? (
-                    <QuotaCountdown resetAt={account.subscriptionEndAt} compact />
+                    <QuotaCountdown resetAt={account.subscriptionEndAt} compact keepZero />
                   ) : undefined
                 }
                 refreshing={refreshingCodexAccountIds.has(account.id)}
@@ -898,10 +906,8 @@ export const CodexAccountSection: React.FC<{ showDivider?: boolean }> = ({
                 onRefresh={() => void refreshCodexAccountQuota(account)}
                 onDelete={() => void deleteCodexAccount(account)}
                 secondary={
-                  isFreePlan(planLabel) &&
-                  !account.quotaWindows?.length &&
-                  quotaPercent == null &&
-                  quotaResetAt == null ? undefined : account.quotaWindows &&
+                  !account.quotaWindows?.some((window) => window.remainingPercent != null) &&
+                  quotaPercent == null ? undefined : account.quotaWindows &&
                     account.quotaWindows.length > 1 ? (
                     <span className="flex h-[16px] min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-[11px] font-semibold leading-[16px] text-cyber-text">
                       {account.quotaWindows.map((window, index) => (
@@ -1015,8 +1021,8 @@ export const AppManagerPanel: React.FC = () => {
           key="web-search"
           label={t('agent.codexWebSearchLabel')}
           hint={t('agent.codexWebSearchHint')}
-          checked={codexWebSearch}
-          disabled={isLaunching}
+          checked={toolModelConfig[selectedTool ?? ''] === 'smart-router' ? false : codexWebSearch}
+          disabled={isLaunching || toolModelConfig[selectedTool ?? ''] === 'smart-router'}
           onChange={setCodexWebSearch}
         />
       )}
@@ -1079,6 +1085,10 @@ export const AppManagerPanel: React.FC = () => {
             <AntigravityAccountSection />
           ) : selectedTool === 'grokbot' || selectedTool === 'cursor' ? (
             <CursorAccountSection tool={selectedTool} />
+          ) : selectedTool === 'kirocrew' || selectedTool === 'kirocli' ? (
+            <KiroAccountSection />
+          ) : selectedTool === 'trae' || selectedTool === 'traecn' ? (
+            <TraeAccountSection />
           ) : selectedToolData.noModelConfig ? (
             <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
               <BoxIcon size={28} className="text-cyber-text opacity-25" />
@@ -1093,7 +1103,22 @@ export const AppManagerPanel: React.FC = () => {
               )}
               {selectedTool === 'dsh' && <DeepSeekAccountSection showDivider={hasVisibleModels} />}
               {selectedTool === 'grok' && <GrokAccountSection showDivider={hasVisibleModels} />}
+              {(selectedTool === 'cline' || selectedTool === 'clinedesktop') && (
+                <ClineAccountSection showDivider={hasVisibleModels} />
+              )}
+              {(selectedTool === 'kilo' || selectedTool === 'kilodesktop') && (
+                <ClientAccountSection provider="kilo" showDivider={hasVisibleModels} />
+              )}
+              {(selectedTool === 'copilot' || selectedTool === 'copilotdesktop') && (
+                <ClientAccountSection provider="copilot" showDivider={hasVisibleModels} />
+              )}
               {selectedTool === 'zcode' && <ZCodeAccountSection showDivider={hasVisibleModels} />}
+              {(selectedTool === 'minimaxcode' || selectedTool === 'minimaxdesktop') && (
+                <MinimaxAccountSection showDivider={hasVisibleModels} />
+              )}
+              {(selectedTool === 'qoder' || selectedTool === 'qodercn') && (
+                <QoderAccountSection showDivider={hasVisibleModels} />
+              )}
               {(selectedTool === 'workbuddy' || selectedTool === 'workbuddyai') && (
                 <WorkBuddyAccountSection showDivider={hasVisibleModels} />
               )}
@@ -1167,9 +1192,16 @@ export const AppManagerBottom: React.FC = () => {
     claudeCodeAccounts,
     claudeDesktopAccounts,
     workBuddyAccounts,
+    traeAccounts,
+    kiroAccounts,
     zcodeAccounts,
+    minimaxAccounts,
+    qoderAccounts,
     deepSeekAccounts,
     grokAccounts,
+    clineAccounts,
+    kiloAccounts,
+    copilotAccounts,
     manusAccounts,
     cueAccounts,
     grokBotAccounts,
@@ -1194,12 +1226,19 @@ export const AppManagerBottom: React.FC = () => {
   const isBuiltInApp = selectedTool === 'reversi' || selectedTool === 'translator';
   const hasModelSelected = !!(selectedTool && toolModelConfig[selectedTool]);
   const hasAccountSelected =
+    (['minimaxcode', 'minimaxdesktop'].includes(selectedTool ?? '') &&
+      !!minimaxAccounts.selectedId) ||
+    (['qoder', 'qodercn'].includes(selectedTool ?? '') && !!qoderAccounts.selectedId) ||
     (selectedTool === 'zcode' && !!zcodeAccounts.selectedId) ||
     ((selectedTool === 'codex' || selectedTool === 'chatgptdesktop') && !!selectedCodexAccountId) ||
     (selectedTool === 'claudecode' && !!claudeCodeAccounts.selectedId) ||
     (selectedTool === 'claudedesktop' && !!claudeDesktopAccounts.selectedId) ||
     (selectedTool === 'dsh' && !!deepSeekAccounts.selectedId) ||
     (selectedTool === 'grok' && !!grokAccounts.selectedId) ||
+    (['cline', 'clinedesktop'].includes(selectedTool ?? '') && !!clineAccounts.selectedId) ||
+    ((selectedTool === 'kilo' || selectedTool === 'kilodesktop') && !!kiloAccounts.selectedId) ||
+    ((selectedTool === 'copilot' || selectedTool === 'copilotdesktop') &&
+      !!copilotAccounts.selectedId) ||
     (selectedTool === 'manus' && !!manusAccounts.selectedId) ||
     (selectedTool === 'cue' && !!cueAccounts.selectedId) ||
     (selectedTool === 'grokbot' && !!grokBotAccounts.selectedId) ||
@@ -1207,7 +1246,9 @@ export const AppManagerBottom: React.FC = () => {
     ((selectedTool === 'antigravity' || selectedTool === 'antigravitydesktop') &&
       !!antigravityAccounts.selectedId) ||
     ((selectedTool === 'workbuddy' || selectedTool === 'workbuddyai') &&
-      !!workBuddyAccounts.selectedId);
+      !!workBuddyAccounts.selectedId) ||
+    ((selectedTool === 'trae' || selectedTool === 'traecn') && !!traeAccounts.selectedId) ||
+    ((selectedTool === 'kirocrew' || selectedTool === 'kirocli') && !!kiroAccounts.selectedId);
   // What will a click actually do?
   //  - "Apply" runs only when the user picked a model AND agreed to the config-write policy.
   //  - "Launch" runs whenever launchAfterApply is on, or unconditionally for desktop/no-config apps.
@@ -1215,17 +1256,27 @@ export const AppManagerBottom: React.FC = () => {
   // forcing model selection just to start a CLI was the long-standing bug.
   const willApply =
     hasAccountSelected || (!noModelConfig && agreedConfigPolicy && hasModelSelected);
-  const willLaunch = launchAfterApply || noModelConfig;
+  const willLaunch =
+    launchAfterApply ||
+    noModelConfig ||
+    ['qoder', 'qodercn', 'claudescience'].includes(selectedTool ?? '');
   const buttonDisabled =
     !selectedToolData ||
     isLaunching ||
     (selectedTool === 'zcode' && zcodeAccounts.busy) ||
+    (['minimaxcode', 'minimaxdesktop'].includes(selectedTool ?? '') && minimaxAccounts.busy) ||
+    (['qoder', 'qodercn'].includes(selectedTool ?? '') && qoderAccounts.busy) ||
     (selectedTool === 'grok' && grokAccounts.busy) ||
+    (['cline', 'clinedesktop'].includes(selectedTool ?? '') && clineAccounts.busy) ||
+    ((selectedTool === 'kilo' || selectedTool === 'kilodesktop') && kiloAccounts.busy) ||
+    ((selectedTool === 'copilot' || selectedTool === 'copilotdesktop') && copilotAccounts.busy) ||
     (selectedTool === 'manus' && manusAccounts.busy) ||
     (selectedTool === 'cue' && cueAccounts.busy) ||
     (selectedTool === 'claudedesktop' && claudeDesktopAccounts.busy) ||
     (selectedTool === 'grokbot' && grokBotAccounts.busy) ||
     (selectedTool === 'cursor' && cursorAccounts.busy) ||
+    ((selectedTool === 'trae' || selectedTool === 'traecn') && traeAccounts.busy) ||
+    ((selectedTool === 'kirocrew' || selectedTool === 'kirocli') && kiroAccounts.busy) ||
     (!isUninstalled && !willApply && !willLaunch);
 
   // Uninstalled → install flow; otherwise the existing launch/apply flow.

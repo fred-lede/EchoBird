@@ -2,10 +2,16 @@ import { useCursorAccounts } from './useCursorAccounts';
 import { useAntigravityAccounts } from './useAntigravityAccounts';
 import { useDeepSeekAccounts } from './useDeepSeekAccounts';
 import { useGrokAccounts } from './useGrokAccounts';
+import { useKiloAccounts, useCopilotAccounts } from './useClientAccounts';
 import { accountError } from '../../utils/accountError';
 import { ClaudeCodeLoginDialog } from './ClaudeCodeLoginDialog';
 import { useWorkBuddyAccounts } from './useWorkBuddyAccounts';
+import { useTraeAccounts } from './useTraeAccounts';
+import { useKiroAccounts } from './useKiroAccounts';
 import { useZCodeAccounts } from './useZCodeAccounts';
+import { useMinimaxAccounts } from './useMinimaxAccounts';
+import { useClineAccounts } from './useClineAccounts';
+import { useQoderAccounts } from './useQoderAccounts';
 import { useClaudeCodeAccounts } from './useClaudeCodeAccounts';
 import { useClaudeDesktopAccounts } from './useClaudeDesktopAccounts';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -141,6 +147,12 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
 
   // Internalized state
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
+  const clineSelectionRevision = useRef(0);
+  const clineNavigation = useRef({ tool: selectedTool, page: activePage });
+  useEffect(() => {
+    clineSelectionRevision.current += 1;
+    clineNavigation.current = { tool: selectedTool, page: activePage };
+  }, [selectedTool, activePage]);
   const accountsEnabled =
     isActive && detectedTools.some((tool) => tool.id === selectedTool && tool.installed);
   const accountGroupEnabled = (...ids: string[]) =>
@@ -148,6 +160,7 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
       ? detectedTools.some((tool) => ids.includes(tool.id) && tool.installed)
       : accountsEnabled && ids.includes(selectedTool ?? '');
   const [isLaunching, setIsLaunching] = useState(false);
+  const launchGeneration = useRef(0);
   const [applyError, setApplyError] = useState<string | null>(null);
   const isCodexTool = selectedTool === 'codex' || selectedTool === 'chatgptdesktop';
   const codexManaged = useCodexAccounts(
@@ -162,6 +175,9 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
     selectedId: selectedCodexAccountId,
     select: selectCodexAccount,
     loading: isLoadingCodexAccounts,
+    loaded: codexAccountsLoaded,
+    readFailed: codexAccountsReadFailed,
+    mutationRevision: codexAccountsMutationRevision,
     busy: isAddingCodexAccount,
     remainingSeconds: codexOAuthRemainingSeconds,
     refreshing: refreshingCodexAccountIds,
@@ -323,6 +339,60 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
   const workBuddyAccounts =
     workBuddyEdition === 'workbuddyai' ? workBuddyAiAccounts : workBuddyCnAccounts;
 
+  const traeCnAccounts = useTraeAccounts('traecn', accountGroupEnabled('traecn'), setApplyError);
+  const traeGlobalAccounts = useTraeAccounts('trae', accountGroupEnabled('trae'), setApplyError);
+  const traeAccounts = selectedTool === 'trae' ? traeGlobalAccounts : traeCnAccounts;
+  const kiroEdition =
+    selectedTool === 'kirocli' && accountGroupEnabled('kirocli')
+      ? 'kirocli'
+      : accountGroupEnabled('kirocrew')
+        ? 'kirocrew'
+        : 'kirocli';
+  const kiroAccounts = useKiroAccounts(
+    kiroEdition,
+    accountGroupEnabled('kirocrew', 'kirocli'),
+    setApplyError
+  );
+
+  const clearMinimaxModel = useCallback(() => {
+    setToolModelConfig((prev) => ({ ...prev, minimaxcode: null, minimaxdesktop: null }));
+  }, []);
+  const minimaxAccounts = useMinimaxAccounts(
+    accountGroupEnabled('minimaxcode', 'minimaxdesktop'),
+    !!(
+      selectedTool &&
+      ['minimaxcode', 'minimaxdesktop'].includes(selectedTool) &&
+      toolModelConfig[selectedTool]
+    ),
+    clearMinimaxModel,
+    setApplyError,
+    activePage === 'accounts' ? 'accounts' : (selectedTool ?? '')
+  );
+  const qoderEdition: api.QoderEdition = selectedTool === 'qodercn' ? 'qodercn' : 'qoder';
+  const clearQoderGlobalModel = useCallback(() => {
+    setToolModelConfig((prev) => ({ ...prev, qoder: null }));
+  }, []);
+  const clearQoderCnModel = useCallback(() => {
+    setToolModelConfig((prev) => ({ ...prev, qodercn: null }));
+  }, []);
+  const qoderGlobalAccounts = useQoderAccounts(
+    'qoder',
+    accountGroupEnabled('qoder'),
+    !!toolModelConfig.qoder,
+    clearQoderGlobalModel,
+    setApplyError,
+    activePage === 'accounts' ? 'accounts' : (selectedTool ?? '')
+  );
+  const qoderCnAccounts = useQoderAccounts(
+    'qodercn',
+    accountGroupEnabled('qodercn'),
+    !!toolModelConfig.qodercn,
+    clearQoderCnModel,
+    setApplyError,
+    activePage === 'accounts' ? 'accounts' : (selectedTool ?? '')
+  );
+  const qoderAccounts = qoderEdition === 'qodercn' ? qoderCnAccounts : qoderGlobalAccounts;
+
   const clearDeepSeekModel = useCallback(() => {
     setToolModelConfig((prev) => ({ ...prev, dsh: null }));
   }, []);
@@ -358,6 +428,58 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
     () => {},
     setApplyError,
     'cue'
+  );
+
+  const clearClineModel = useCallback(() => {
+    clineSelectionRevision.current += 1;
+    setToolModelConfig((prev) => ({ ...prev, cline: null, clinedesktop: null }));
+  }, []);
+  const clineAccounts = useClineAccounts(
+    accountGroupEnabled('cline', 'clinedesktop'),
+    !!(
+      selectedTool &&
+      ['cline', 'clinedesktop'].includes(selectedTool) &&
+      toolModelConfig[selectedTool]
+    ),
+    clearClineModel,
+    setApplyError,
+    activePage === 'accounts' ? 'accounts' : (selectedTool ?? '')
+  );
+
+  const clearKiloModel = useCallback(
+    () => setToolModelConfig((prev) => ({ ...prev, kilo: null, kilodesktop: null })),
+    []
+  );
+  const kiloAccounts = useKiloAccounts(
+    accountGroupEnabled('kilo', 'kilodesktop'),
+    !!(
+      selectedTool &&
+      ['kilo', 'kilodesktop'].includes(selectedTool) &&
+      toolModelConfig[selectedTool]
+    ),
+    clearKiloModel,
+    setApplyError,
+    activePage === 'accounts' ? 'accounts' : (selectedTool ?? '')
+  );
+  const clearCopilotModel = useCallback(
+    () => setToolModelConfig((prev) => ({ ...prev, copilot: null, copilotdesktop: null })),
+    []
+  );
+  const copilotAccounts = useCopilotAccounts(
+    accountGroupEnabled('copilot', 'copilotdesktop'),
+    !!(
+      selectedTool &&
+      ['copilot', 'copilotdesktop'].includes(selectedTool) &&
+      toolModelConfig[selectedTool]
+    ),
+    clearCopilotModel,
+    setApplyError,
+    selectedTool === 'copilotdesktop' ||
+      (activePage === 'accounts' &&
+        !detectedTools.some((tool) => tool.id === 'copilot' && tool.installed))
+      ? 'copilotdesktop'
+      : 'copilot',
+    activePage === 'accounts' ? 'accounts' : (selectedTool ?? '')
   );
 
   const clearGrokBotModel = useCallback(
@@ -400,6 +522,12 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
 
   // Set tool model (single selection) - UI state update
   const handleSelectModel = (toolId: string, modelId: string) => {
+    if (toolId === 'cline' || toolId === 'clinedesktop') {
+      clineSelectionRevision.current += 1;
+      clineAccounts.select(null);
+    }
+    if (toolId === 'minimaxcode' || toolId === 'minimaxdesktop') minimaxAccounts.select(null);
+    if (toolId === 'qoder' || toolId === 'qodercn') qoderAccounts.select(null);
     if (toolId === 'zcode') zcodeAccounts.select(null);
     if (toolId === 'cursor') cursorAccounts.select(null);
     if (toolId === 'grokbot') grokBotAccounts.select(null);
@@ -407,6 +535,8 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
     if (toolId === 'grok') grokAccounts.select(null);
     if (toolId === 'manus') manusAccounts.select(null);
     if (toolId === 'cue') cueAccounts.select(null);
+    if (toolId === 'kilo' || toolId === 'kilodesktop') kiloAccounts.select(null);
+    if (toolId === 'copilot' || toolId === 'copilotdesktop') copilotAccounts.select(null);
     if (toolId === 'claudecode') claudeCodeAccounts.setSelectedId(null);
     if (toolId === 'claudedesktop') claudeDesktopAccounts.select(null);
     if (toolId === 'workbuddy' || toolId === 'workbuddyai') workBuddyAccounts.select(null);
@@ -490,7 +620,10 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
         ...(isRelayCapableApp ? { relayMode: effectiveRelay } : {}),
         ...(isClaudeApp ? { oneMContext: effective1m } : {}),
         ...(['codex', 'chatgptdesktop'].includes(toolId)
-          ? { webSearch: webSearchOverride ?? codexWebSearch }
+          ? {
+              webSearch:
+                model.internalId === 'smart-router' ? false : (webSearchOverride ?? codexWebSearch),
+            }
           : {}),
       });
 
@@ -524,7 +657,7 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
 
   // Restore the shared Web Search preference and apply it on an explicit flip.
   const setCodexWebSearch = (value: boolean) => {
-    if (isLaunching) return;
+    if (isLaunching || (selectedTool && toolModelConfig[selectedTool] === 'smart-router')) return;
     setCodexWebSearchRaw(value);
     writeBool('echobird_codex_web_search', value);
     if (!isCodexTool || !selectedTool || !selectedToolData?.installed || selectedCodexAccountId)
@@ -664,16 +797,39 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
     if (selectedTool === 'zcode' && zcodeAccounts.busy) return;
     if (selectedTool === 'claudedesktop' && claudeDesktopAccounts.busy) return;
     if (selectedTool === 'cue' && cueAccounts.busy) return;
+    if (['cline', 'clinedesktop'].includes(selectedTool) && clineAccounts.busy) return;
+    if (['kilo', 'kilodesktop'].includes(selectedTool) && kiloAccounts.busy) return;
+    if (['copilot', 'copilotdesktop'].includes(selectedTool) && copilotAccounts.busy) return;
+    if ((selectedTool === 'trae' || selectedTool === 'traecn') && traeAccounts.busy) return;
+    if (['minimaxcode', 'minimaxdesktop'].includes(selectedTool) && minimaxAccounts.busy) return;
+    if (['qoder', 'qodercn'].includes(selectedTool) && qoderAccounts.busy) return;
+    if ((selectedTool === 'kirocrew' || selectedTool === 'kirocli') && kiroAccounts.busy) return;
+    const generation = ++launchGeneration.current;
+    const finishLaunch = () => {
+      if (launchGeneration.current === generation) setIsLaunching(false);
+    };
+    const startCooldown = () => {
+      setTimeout(finishLaunch, 3000);
+    };
     setIsLaunching(true);
     const switchingClaudeAccount =
       (selectedTool === 'claudecode' && !!claudeCodeAccounts.selectedId) ||
       (selectedTool === 'claudedesktop' && !!claudeDesktopAccounts.selectedId);
     if (
+      selectedTool !== 'vscode' &&
+      selectedTool !== 'copilotdesktop' &&
       !switchingClaudeAccount &&
       !(workBuddyEdition && workBuddyAccounts.selectedId) &&
+      !((selectedTool === 'trae' || selectedTool === 'traecn') && traeAccounts.selectedId) &&
+      !(['minimaxcode', 'minimaxdesktop'].includes(selectedTool) && minimaxAccounts.selectedId) &&
+      !(['qoder', 'qodercn'].includes(selectedTool) && qoderAccounts.selectedId) &&
+      !((selectedTool === 'kirocrew' || selectedTool === 'kirocli') && kiroAccounts.selectedId) &&
       !(selectedTool === 'zcode' && zcodeAccounts.selectedId) &&
       !(selectedTool === 'dsh' && deepSeekAccounts.selectedId) &&
       !(selectedTool === 'grok' && grokAccounts.selectedId) &&
+      !(['cline', 'clinedesktop'].includes(selectedTool) && clineAccounts.selectedId) &&
+      !(['kilo', 'kilodesktop'].includes(selectedTool) && kiloAccounts.selectedId) &&
+      !(['copilot', 'copilotdesktop'].includes(selectedTool) && copilotAccounts.selectedId) &&
       !(selectedTool === 'manus' && manusAccounts.selectedId) &&
       !(selectedTool === 'cue' && cueAccounts.selectedId) &&
       !(selectedTool === 'cursor' && cursorAccounts.selectedId) &&
@@ -683,11 +839,16 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
         antigravityAccounts.selectedId
       )
     )
-      setTimeout(() => setIsLaunching(false), 3000); // 3 second cooldown
+      startCooldown();
 
     const toolData = detectedTools.find((t) => t.id === selectedTool);
     const isLaunchable = !!toolData?.launchFile;
     const noModelConfig = !!toolData?.noModelConfig;
+    const pickWorkingDirectory = async () => {
+      if (toolData?.category !== 'CLI Code' || toolData.noCwdPrompt) return undefined;
+      const picked = await openDialog({ directory: true, multiple: false });
+      return typeof picked === 'string' && picked ? picked : null;
+    };
 
     // An OpenAI account and a third-party API model are one exclusive choice.
     // Selecting an account restores the official provider before writing that
@@ -701,17 +862,17 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
         await antigravityAccounts.reload();
       } catch (error) {
         setApplyError(accountError(error, t));
-        setIsLaunching(false);
+        finishLaunch();
         return;
       }
-      setTimeout(() => setIsLaunching(false), 3000);
+      startCooldown();
     } else if (isCodexTool && selectedCodexAccountId) {
       const restoreResult = await applyRestore(selectedTool);
       if (restoreResult !== true) {
         setApplyError(
           typeof restoreResult === 'string' ? accountError(restoreResult, t) : t('key.destroyed')
         );
-        setIsLaunching(false);
+        finishLaunch();
         return;
       }
       try {
@@ -719,9 +880,43 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
         await loadCodexAccounts();
       } catch (error) {
         setApplyError(accountError(error, t));
-        setIsLaunching(false);
+        finishLaunch();
         return;
       }
+    } else if (
+      ((selectedTool === 'kilo' || selectedTool === 'kilodesktop') && kiloAccounts.selectedId) ||
+      ((selectedTool === 'copilot' || selectedTool === 'copilotdesktop') &&
+        copilotAccounts.selectedId)
+    ) {
+      try {
+        if (selectedTool === 'kilo' || selectedTool === 'kilodesktop') {
+          await api.switchKiloAccount(kiloAccounts.selectedId!, selectedTool);
+          await kiloAccounts.reload();
+        } else {
+          await api.switchCopilotAccount(
+            copilotAccounts.selectedId!,
+            selectedTool as api.CopilotTool
+          );
+          await copilotAccounts.reload();
+        }
+        setDetectedTools((prev) =>
+          prev.map((tool) => (tool.id === selectedTool ? { ...tool, activeModel: '' } : tool))
+        );
+        if (launchAfterApply) {
+          let cwd: string | undefined;
+          if (toolData?.category === 'CLI Code' && !toolData.noCwdPrompt) {
+            const picked = await openDialog({ directory: true, multiple: false });
+            if (typeof picked !== 'string' || !picked) return;
+            cwd = picked;
+          }
+          await api.startTool(selectedTool, toolData?.startCommand, cwd);
+        }
+      } catch (error) {
+        setApplyError(accountError(error, t));
+      } finally {
+        finishLaunch();
+      }
+      return;
     } else if (selectedTool === 'dsh' && deepSeekAccounts.selectedId) {
       try {
         await api.switchDeepSeekAccount(deepSeekAccounts.selectedId, locale);
@@ -733,7 +928,7 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
       } catch (error) {
         setApplyError(accountError(error, t));
       } finally {
-        setIsLaunching(false);
+        finishLaunch();
       }
       return;
     } else if (selectedTool === 'grokbot' && grokBotAccounts.selectedId) {
@@ -744,7 +939,7 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
       } catch (error) {
         setApplyError(accountError(error, t));
       } finally {
-        setIsLaunching(false);
+        finishLaunch();
       }
       return;
     } else if (selectedTool === 'cursor' && cursorAccounts.selectedId) {
@@ -755,7 +950,7 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
       } catch (error) {
         setApplyError(accountError(error, t));
       } finally {
-        setIsLaunching(false);
+        finishLaunch();
       }
       return;
     } else if (
@@ -768,7 +963,7 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
       } catch (error) {
         setApplyError(accountError(error, t));
       } finally {
-        setIsLaunching(false);
+        finishLaunch();
       }
       return;
     } else if (selectedTool === 'grok' && grokAccounts.selectedId) {
@@ -777,12 +972,76 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
         if (restored !== true)
           throw new Error(typeof restored === 'string' ? restored : t('key.destroyed'));
         await grokAccounts.switchAccount();
-        setTimeout(() => setIsLaunching(false), 3000);
+        startCooldown();
       } catch (error) {
         setApplyError(accountError(error, t));
-        setIsLaunching(false);
+        finishLaunch();
         return;
       }
+    } else if (['cline', 'clinedesktop'].includes(selectedTool) && clineAccounts.selectedId) {
+      const selectionRevision = clineSelectionRevision.current;
+      const current = () =>
+        selectionRevision === clineSelectionRevision.current &&
+        clineNavigation.current.tool === selectedTool &&
+        clineNavigation.current.page === activePage;
+      try {
+        const cwd = launchAfterApply ? await pickWorkingDirectory() : undefined;
+        if (cwd === null || !current()) return;
+        await api.switchClineAccount(clineAccounts.selectedId, selectedTool as api.ClineTool);
+        setDetectedTools((prev) =>
+          prev.map((tool) =>
+            ['cline', 'clinedesktop'].includes(tool.id) ? { ...tool, activeModel: '' } : tool
+          )
+        );
+        if (selectionRevision === clineSelectionRevision.current)
+          setToolModelConfig((prev) => ({ ...prev, cline: null, clinedesktop: null }));
+        await clineAccounts.reload();
+        if (launchAfterApply && current())
+          await api.startTool(selectedTool, toolData?.startCommand, cwd);
+      } catch (error) {
+        if (current()) setApplyError(accountError(error, t));
+      } finally {
+        finishLaunch();
+      }
+      return;
+    } else if (
+      ['minimaxcode', 'minimaxdesktop'].includes(selectedTool) &&
+      minimaxAccounts.selectedId
+    ) {
+      try {
+        const cwd = launchAfterApply ? await pickWorkingDirectory() : undefined;
+        if (cwd === null) return;
+        await api.switchMinimaxAccount(minimaxAccounts.selectedId, selectedTool as api.MinimaxTool);
+        setDetectedTools((prev) =>
+          prev.map((tool) =>
+            ['minimaxcode', 'minimaxdesktop'].includes(tool.id)
+              ? { ...tool, activeModel: '' }
+              : tool
+          )
+        );
+        await minimaxAccounts.reload();
+        if (launchAfterApply) await api.startTool(selectedTool, toolData?.startCommand, cwd);
+      } catch (error) {
+        setApplyError(accountError(error, t));
+      } finally {
+        finishLaunch();
+      }
+      return;
+    } else if (['qoder', 'qodercn'].includes(selectedTool) && qoderAccounts.selectedId) {
+      try {
+        await api.switchQoderAccount(
+          qoderEdition,
+          qoderAccounts.selectedId,
+          selectedTool as api.QoderTool
+        );
+        await qoderAccounts.reload();
+        await api.startTool(selectedTool, toolData?.startCommand);
+      } catch (error) {
+        setApplyError(accountError(error, t));
+      } finally {
+        finishLaunch();
+      }
+      return;
     } else if (selectedTool === 'zcode' && zcodeAccounts.selectedId) {
       try {
         await api.switchZCodeAccount(zcodeAccounts.selectedId);
@@ -794,7 +1053,7 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
       } catch (error) {
         setApplyError(accountError(error, t));
       } finally {
-        setIsLaunching(false);
+        finishLaunch();
       }
       return;
     } else if (workBuddyEdition && workBuddyAccounts.selectedId) {
@@ -805,7 +1064,31 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
       } catch (error) {
         setApplyError(accountError(error, t));
       } finally {
-        setIsLaunching(false);
+        finishLaunch();
+      }
+      return;
+    } else if (
+      (selectedTool === 'kirocrew' || selectedTool === 'kirocli') &&
+      kiroAccounts.selectedId
+    ) {
+      try {
+        await api.switchKiroAccount(selectedTool, kiroAccounts.selectedId);
+        await kiroAccounts.reload();
+      } catch (error) {
+        setApplyError(accountError(error, t));
+        finishLaunch();
+        return;
+      }
+    } else if ((selectedTool === 'trae' || selectedTool === 'traecn') && traeAccounts.selectedId) {
+      try {
+        await api.switchTraeAccount(selectedTool, traeAccounts.selectedId);
+        await traeAccounts.reload();
+        if (launchAfterApply || noModelConfig)
+          await api.startTool(selectedTool, toolData?.startCommand);
+      } catch (error) {
+        setApplyError(accountError(error, t));
+      } finally {
+        finishLaunch();
       }
       return;
     } else if (selectedTool === 'claudedesktop' && claudeDesktopAccounts.selectedId) {
@@ -819,7 +1102,7 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
       } catch (error) {
         setApplyError(accountError(error, t));
       } finally {
-        setIsLaunching(false);
+        finishLaunch();
       }
       return;
     } else if (selectedTool === 'claudecode' && claudeCodeAccounts.selectedId) {
@@ -829,10 +1112,10 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
           throw new Error(typeof restored === 'string' ? restored : t('key.destroyed'));
         await api.switchClaudeCodeAccount(claudeCodeAccounts.selectedId);
         await claudeCodeAccounts.reload();
-        setTimeout(() => setIsLaunching(false), 3000);
+        startCooldown();
       } catch (error) {
         setApplyError(accountError(error, t));
-        setIsLaunching(false);
+        finishLaunch();
         return;
       }
     } else if (
@@ -847,7 +1130,7 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
         : await applyModelConfig(selectedTool, pending);
       if (applyResult !== true) {
         setApplyError(typeof applyResult === 'string' ? applyResult : t('key.destroyed'));
-        setIsLaunching(false);
+        finishLaunch();
         return;
       }
       // Only Xiaomi's MiMo models get the apply pulse + sound; every other model
@@ -856,7 +1139,11 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
       if (readBool('echobird_easter_egg', true) && isMimoModel(appliedModel)) firePulse(pending);
     }
     // Launch tool when "launch directly" is checked, or unconditionally for desktop apps
-    if (launchAfterApply || noModelConfig) {
+    if (
+      launchAfterApply ||
+      noModelConfig ||
+      ['qoder', 'qodercn', 'claudescience'].includes(selectedTool)
+    ) {
       if (isLaunchable) {
         // Launchable tool (e.g. game): open independent window with model config
         const selectedModelId = toolModelConfig[selectedTool];
@@ -907,29 +1194,34 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
         // (e.g. openclaw) — it launches directly with no prompt, spawning in
         // the home dir, which is fine for self-contained CLI agents.
         let cwd: string | undefined;
-        if (toolData?.category === 'CLI Code' && !toolData?.noCwdPrompt) {
-          try {
-            const picked = await openDialog({ directory: true, multiple: false });
-            if (typeof picked !== 'string' || !picked) {
-              setIsLaunching(false);
-              return;
-            }
-            cwd = picked;
-          } catch (e) {
-            console.error('[AppManager] folder picker failed:', e);
-            setApplyError(e instanceof Error ? e.message : String(e));
-            setIsLaunching(false);
+        try {
+          const picked = await pickWorkingDirectory();
+          if (picked === null) {
+            finishLaunch();
             return;
           }
+          cwd = picked;
+        } catch (e) {
+          console.error('[AppManager] folder picker failed:', e);
+          setApplyError(e instanceof Error ? e.message : String(e));
+          finishLaunch();
+          return;
         }
         try {
           await api.startTool(selectedTool, toolData?.startCommand, cwd);
         } catch (err) {
           console.error('Failed to launch tool:', err);
           setApplyError(err instanceof Error ? err.message : String(err));
+        } finally {
+          if (
+            (selectedTool === 'kirocrew' || selectedTool === 'kirocli') &&
+            kiroAccounts.selectedId
+          )
+            finishLaunch();
         }
       }
     }
+    if (selectedTool === 'vscode' || selectedTool === 'copilotdesktop') startCooldown();
   };
 
   return (
@@ -970,15 +1262,63 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
             accounts: orderedAccounts('workbuddyai', workBuddyAiAccounts.accounts),
           },
         },
+        kiroAccounts: {
+          ...kiroAccounts,
+          accounts: orderedAccounts('kiro', kiroAccounts.accounts),
+        },
+        traeAccounts: {
+          ...traeAccounts,
+          accounts: orderedAccounts(
+            selectedTool === 'trae' ? 'trae' : 'traecn',
+            traeAccounts.accounts
+          ),
+        },
+        traeAccountGroups: {
+          trae: {
+            ...traeGlobalAccounts,
+            accounts: orderedAccounts('trae', traeGlobalAccounts.accounts),
+          },
+          traecn: {
+            ...traeCnAccounts,
+            accounts: orderedAccounts('traecn', traeCnAccounts.accounts),
+          },
+        },
         zcodeAccounts: {
           ...zcodeAccounts,
           accounts: orderedAccounts('zcode', zcodeAccounts.accounts),
+        },
+        minimaxAccounts: {
+          ...minimaxAccounts,
+          accounts: orderedAccounts('minimax', minimaxAccounts.accounts),
+        },
+        qoderAccounts: {
+          ...qoderAccounts,
+          accounts: orderedAccounts(qoderEdition, qoderAccounts.accounts),
+        },
+        qoderAccountGroups: {
+          qoder: {
+            ...qoderGlobalAccounts,
+            accounts: orderedAccounts('qoder', qoderGlobalAccounts.accounts),
+          },
+          qodercn: {
+            ...qoderCnAccounts,
+            accounts: orderedAccounts('qodercn', qoderCnAccounts.accounts),
+          },
         },
         deepSeekAccounts: {
           ...deepSeekAccounts,
           accounts: orderedAccounts('dsh', deepSeekAccounts.accounts),
         },
         grokAccounts: { ...grokAccounts, accounts: orderedAccounts('grok', grokAccounts.accounts) },
+        clineAccounts: {
+          ...clineAccounts,
+          accounts: orderedAccounts('cline', clineAccounts.accounts),
+        },
+        kiloAccounts: { ...kiloAccounts, accounts: orderedAccounts('kilo', kiloAccounts.accounts) },
+        copilotAccounts: {
+          ...copilotAccounts,
+          accounts: orderedAccounts('copilot', copilotAccounts.accounts),
+        },
         manusAccounts: {
           ...manusAccounts,
           accounts: orderedAccounts('manus', manusAccounts.accounts),
@@ -1003,6 +1343,9 @@ export const AppManagerProvider: React.FC<AppManagerProviderProps> = ({ children
         selectedCodexAccountId,
         setSelectedCodexAccountId: selectCodexAccount,
         isLoadingCodexAccounts,
+        codexAccountsLoaded,
+        codexAccountsReadFailed,
+        codexAccountsMutationRevision,
         isAddingCodexAccount,
         codexOAuthRemainingSeconds,
         refreshingCodexAccountIds,

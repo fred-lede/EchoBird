@@ -1,15 +1,45 @@
 // Model APIs — CRUD, test, ping, encryption
 import { invoke } from '@tauri-apps/api/core';
-import type { ModelConfig, ModelTestResult, PingResult } from './types';
+import type { AccountSource, ModelConfig, ModelTestResult, PingResult } from './types';
 
 export async function getModels(): Promise<ModelConfig[]> {
   return invoke('get_models');
+}
+
+export interface UpstreamModelCatalogInput {
+  baseUrl: string;
+  anthropicUrl: string;
+  apiKey: string;
+}
+
+export interface UpstreamModelInfo {
+  id: string;
+  free?: boolean;
+  multiplier?: number;
+}
+
+export interface UpstreamModelCatalog {
+  models: UpstreamModelInfo[];
+  requiresApiKey: boolean;
+}
+
+export function fetchUpstreamModelCatalog(
+  input: UpstreamModelCatalogInput
+): Promise<UpstreamModelCatalog> {
+  return invoke('fetch_upstream_model_catalog', { input });
+}
+
+export function getCachedUpstreamModelCatalog(
+  input: UpstreamModelCatalogInput
+): Promise<UpstreamModelCatalog | null> {
+  return invoke('get_cached_upstream_model_catalog', { input });
 }
 
 export async function addModel(input: {
   name: string;
   baseUrl: string;
   apiKey: string;
+  accountSource?: AccountSource;
   anthropicUrl?: string;
   modelId?: string;
   scope?: 'modelCenter' | 'smartRouter';
@@ -31,6 +61,7 @@ export async function updateModel(
     name?: string;
     baseUrl?: string;
     apiKey?: string;
+    accountSource?: AccountSource;
     anthropicUrl?: string;
     modelId?: string;
   }

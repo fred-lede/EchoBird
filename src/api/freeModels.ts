@@ -30,3 +30,8 @@ export async function getFreeModelDirectory(): Promise<FreeModelDirectory | null
   const result = await invoke<FreeModelDirectory | null>('get_free_model_directory');
   return result && Array.isArray(result.models) ? result : null;
 }
+
+export async function getCachedFreeModelDirectory(): Promise<FreeModelDirectory | null> {
+  const result = await invoke<FreeModelDirectory | null>('get_cached_free_model_directory');
+  return result && Array.isArray(result.models) ? result : null;
+}

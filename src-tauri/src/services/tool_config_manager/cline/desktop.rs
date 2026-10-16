@@ -33,7 +33,7 @@ fn decode_utf16(bytes: &[u8]) -> Result<String, String> {
     .map_err(|_| "Invalid Cline Desktop model selection encoding".into())
 }
 
-pub(super) enum Storage {
+pub(crate) enum Storage {
     #[cfg(windows)]
     Level(Box<rusty_leveldb::DB>),
     #[cfg(any(not(windows), test))]
@@ -41,11 +41,11 @@ pub(super) enum Storage {
 }
 
 impl Storage {
-    pub(super) fn open() -> Result<Self, String> {
+    pub(crate) fn open() -> Result<Self, String> {
         Self::open_at(&path()?)
     }
 
-    fn open_at(path: &Path) -> Result<Self, String> {
+    pub(crate) fn open_at(path: &Path) -> Result<Self, String> {
         #[cfg(windows)]
         if path.is_dir() {
             let db = rusty_leveldb::DB::open(
@@ -76,7 +76,7 @@ impl Storage {
         Err(MISSING.into())
     }
 
-    pub(super) fn read(&mut self) -> Result<Value, String> {
+    pub(crate) fn read(&mut self) -> Result<Value, String> {
         let text = match self {
             #[cfg(windows)]
             Self::Level(db) => {
@@ -105,7 +105,7 @@ impl Storage {
         Ok(value)
     }
 
-    pub(super) fn write(&mut self, selection: &Value) -> Result<(), String> {
+    pub(crate) fn write(&mut self, selection: &Value) -> Result<(), String> {
         let text = serde_json::to_string(selection)
             .map_err(|_| "Cannot serialize Cline Desktop model selection")?;
         let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -240,7 +240,7 @@ fn read_at(source: &Path) -> Result<Value, String> {
     Storage::open_at(&target)?.read()
 }
 
-pub(super) fn read() -> Result<Value, String> {
+pub(crate) fn read() -> Result<Value, String> {
     read_at(&path()?)
 }
 

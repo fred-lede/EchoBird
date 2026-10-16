@@ -21,7 +21,7 @@ export function preloadToolIcons(tools: LocalTool[]): Promise<LocalTool[]> {
   return Promise.all(
     tools.map(async (tool) => {
       const sources = [
-        ...(tool.id === 'dsh' ? [] : [`./icons/tools/${tool.id}.svg`]),
+        ...(['dsh', 'musecode'].includes(tool.id) ? [] : [`./icons/tools/${tool.id}.svg`]),
         `./icons/tools/${tool.id}.png`,
         ...(tool.iconBase64 ? [tool.iconBase64] : []),
       ];

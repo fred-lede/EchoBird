@@ -43,10 +43,6 @@
   --text-muted-rgb: 130 124 114; /* #827C72 — readable warm muted */
 }
 
-.settings-language-select > div {
-  background-color: rgb(var(--bg-input-rgb));
-}
-
 .usage-card-action-button {
   position: relative;
   display: inline-flex;
@@ -97,6 +93,45 @@
   outline-offset: 3px;
 }
 
+.mother-reasoning-slider {
+  appearance: none;
+  height: 40px;
+  background: transparent;
+  touch-action: none;
+}
+
+.mother-reasoning-slider::-webkit-slider-runnable-track {
+  height: 24px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    rgb(var(--accent-rgb)) var(--reasoning-progress),
+    rgb(var(--bg-elevated-rgb)) var(--reasoning-progress)
+  );
+}
+
+.mother-reasoning-slider::-webkit-slider-thumb {
+  appearance: none;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  margin-top: -4px;
+  border: 1px solid rgb(var(--border-rgb));
+  border-radius: 50%;
+  background: rgb(var(--text-primary-rgb));
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+}
+
+:root[data-theme='light'] .mother-reasoning-slider::-webkit-slider-thumb {
+  background: rgb(var(--bg-terminal-rgb));
+}
+
+.mother-reasoning-slider:focus-visible {
+  outline: 2px solid rgb(var(--accent-rgb));
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
 .usage-card-action-button:hover {
   color: rgb(var(--text-primary-rgb));
 }
@@ -111,7 +146,8 @@
   }
 }
 
-.view-mode-tab[aria-pressed='true'] {
+.view-mode-tab[aria-pressed='true'],
+.view-mode-tab[aria-selected='true'] {
   background-color: color-mix(in srgb, rgb(var(--accent-rgb)) 30%, rgb(var(--bg-base-rgb)));
   --view-mode-wave-rgb: var(--accent-rgb);
   --view-mode-wave-stops:
@@ -128,7 +164,8 @@
   animation: view-mode-gradient-flow 3s linear infinite;
 }
 
-:root[data-theme='light'] .view-mode-tab[aria-pressed='true'] {
+:root[data-theme='light'] .view-mode-tab[aria-pressed='true'],
+:root[data-theme='light'] .view-mode-tab[aria-selected='true'] {
   --view-mode-wave-rgb: 255 246 235;
   background-color: color-mix(in srgb, rgb(var(--bg-elevated-rgb)) 94%, rgb(var(--accent-rgb)));
 }
@@ -147,7 +184,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .view-mode-tab[aria-pressed='true'] {
+  .view-mode-tab[aria-pressed='true'],
+  .view-mode-tab[aria-selected='true'] {
     animation: none;
   }
 }
@@ -398,6 +436,11 @@ input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='
 textarea:not(:disabled),
 [contenteditable='true']:not(:disabled) {
   cursor: text;
+}
+
+html.local-llm-page,
+html.local-llm-page * {
+  cursor: default !important;
 }
 
 /* html/body/#root must stay transparent so the rounded outer shell in App.tsx
@@ -652,6 +695,10 @@ html.is-macos .page-scroll::-webkit-scrollbar {
 [data-theme='dark'] img[src*='/icons/tools/grok.svg'],
 [data-theme='dark'] img[src*='/icons/tools/openscience.svg'] {
   filter: invert(1) brightness(0.92);
+}
+
+[data-theme='dark'] img[src*='/icons/models/liquid.svg'] {
+  filter: invert(1);
 }
 
 img[src*='/icons/tools/openscience.svg'] {

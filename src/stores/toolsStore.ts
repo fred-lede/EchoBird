@@ -9,6 +9,7 @@ import { preloadToolIcons } from '../utils/toolIcons';
 interface ToolsState {
   detectedTools: LocalTool[];
   isScanning: boolean;
+  hasScanned: boolean;
   setDetectedTools: (tools: LocalTool[] | ((prev: LocalTool[]) => LocalTool[])) => void;
   scanTools: () => Promise<void>;
 }
@@ -16,9 +17,11 @@ interface ToolsState {
 export const useToolsStore = create<ToolsState>((set, get) => ({
   detectedTools: [],
   isScanning: false,
+  hasScanned: false,
   setDetectedTools: (tools) =>
     set((state) => ({
       detectedTools: typeof tools === 'function' ? tools(state.detectedTools) : tools,
+      hasScanned: true,
     })),
 
   scanTools: async () => {
@@ -31,6 +34,6 @@ export const useToolsStore = create<ToolsState>((set, get) => ({
     } catch {
       /* ignore */
     }
-    set({ isScanning: false });
+    set({ isScanning: false, hasScanned: true });
   },
 }));

@@ -50,11 +50,11 @@
   </tr>
   <tr>
     <td width="150" align="center">
-      <a href="https://grooroute.com/register?aff=FWGVPMYENJQ8"><img src="docs/sponsors/grooroute.png" width="92" alt="GrooRoute" /></a>
+      <a href="https://grooroute.pro/sign-up?aff=FWGVPMYENJQ8"><img src="docs/sponsors/grooroute.png" width="92" alt="GrooRoute Pro" /></a>
     </td>
     <td>
-      <a href="https://grooroute.com/register?aff=FWGVPMYENJQ8"><strong>GrooRoute</strong></a> — Claude 与 GPT 官方原模型<br/>
-      感谢 <strong>GrooRoute</strong> 赞助了本项目!现已开放 Claude 与 GPT 官方原模型。我们邀请每一个有好奇心的人，用上最先进的智能。国内直连，即开即用——一行配置，接入 Fable 5、GPT-5.6 在内的前沿模型。通过<a href="https://grooroute.com/register?aff=FWGVPMYENJQ8">此链接</a>注册即可开用。
+      <a href="https://grooroute.pro/sign-up?aff=FWGVPMYENJQ8"><strong>GrooRoute Pro</strong></a> — Claude 与 GPT 官方原模型<br/>
+      感谢 <strong>GrooRoute Pro</strong> 赞助了本项目!现已开放 Claude 与 GPT 官方原模型。我们邀请每一个有好奇心的人，用上最先进的智能。国内直连，即开即用——一行配置，接入 GPT-6.1 Sol、Claude Opus 5.5、Claude Sonnet 5.5、Claude Fable 5.1、GPT-6 Sol、GPT-6 Astra、GPT-6 Luna、DeepSeek V4.1 Flash、Grok 4.7 在内的前沿模型。通过<a href="https://grooroute.pro/sign-up?aff=FWGVPMYENJQ8">此链接</a>注册即可开用。
     </td>
   </tr>
   <tr>

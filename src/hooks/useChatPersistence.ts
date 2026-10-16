@@ -1,186 +1,290 @@
-// useChatPersistence — localStorage-backed chat history for Mother Agent.
-// History is small enough to live entirely in localStorage; pagination
-// still exists in the API but always serves from memory after first load.
-
+// Local conversation history. Model context is persisted separately by the backend.
 import { useState, useRef, useEffect, useCallback } from 'react';
+import type { BubbleChip } from '../components/chat/ChatBubble';
 
-/** Disk message format (we persist only role + content) */
 export interface DiskMsg {
   role: string;
   content: string;
+  chips?: BubbleChip[];
 }
 
-export interface UseChatPersistenceOptions<T> {
-  /** localStorage key prefix (null = disabled) */
-  diskKey: string | null;
-  /** Current in-memory messages */
+export interface ChatConversation<T> {
+  id: string;
+  serverId: string;
+  sessionKey: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
   messages: T[];
-  /** Prepend older messages from disk */
-  prependMessages: (older: T[]) => void;
-  /** Replace all messages (used on initial load) */
-  setMessages: (msgs: T[]) => void;
-  /** Convert app message → disk format (return null to skip) */
-  toDisk: (msg: T) => DiskMsg | null;
-  /** Convert disk format → app message */
-  fromDisk: (msg: DiskMsg) => T;
-  /** Messages per page (default 30) */
-  pageSize?: number;
-  /** Debounce delay in ms (default 800) */
-  debounceMs?: number;
 }
 
-export interface UseChatPersistenceResult {
-  diskTotal: number;
-  showSkeleton: boolean;
-  displayCount: number;
-  resetDisplayCount: () => void;
-  loadInitial: () => Promise<void>;
-  handleScrollPagination: (container: HTMLDivElement) => void;
-  loadOlderChat: () => Promise<number>;
-  clearHistory: () => Promise<void>;
+interface ConversationState<T> {
+  activeConversationId: string;
+  conversations: ChatConversation<T>[];
 }
 
-const STORAGE_PREFIX = 'echobird:chat:';
+export const CONVERSATIONS_STORAGE_KEY = 'echobird:agent:conversations';
+const LEGACY_PREFIX = 'echobird:chat:agent_';
 
-function readStored(key: string): DiskMsg[] {
+function newConversation<T>(serverId: string): ChatConversation<T> {
+  const id = crypto.randomUUID();
+  return {
+    id,
+    serverId,
+    sessionKey: id,
+    title: '',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: [],
+  };
+}
+
+function readMessages(value: unknown): DiskMsg[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (m): m is DiskMsg => typeof m?.role === 'string' && typeof m?.content === 'string'
+      )
+    : [];
+}
+
+function loadConversations<T>(fromDisk: (m: DiskMsg) => T): ConversationState<T> {
+  const conversations: ChatConversation<T>[] = [];
   try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + key);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const raw = localStorage.getItem(CONVERSATIONS_STORAGE_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (saved.version === 1 && Array.isArray(saved.conversations)) {
+        for (const c of saved.conversations) {
+          if (
+            typeof c?.id !== 'string' ||
+            typeof c.serverId !== 'string' ||
+            typeof c.sessionKey !== 'string' ||
+            typeof c.title !== 'string' ||
+            !Number.isFinite(c.createdAt) ||
+            !Number.isFinite(c.updatedAt)
+          )
+            continue;
+          conversations.push({ ...c, messages: readMessages(c.messages).map(fromDisk) });
+        }
+        if (conversations.length) {
+          const active =
+            conversations.find((c) => c.id === saved.activeConversationId) ??
+            [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+          return { conversations, activeConversationId: active.id };
+        }
+      }
+    }
   } catch {
-    return [];
+    // A damaged index must not prevent the old history from being recovered.
   }
-}
-
-function writeStored(key: string, msgs: DiskMsg[]) {
   try {
-    localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(msgs));
-  } catch {
-    /* quota / private mode — ignore */
-  }
-}
-
-export function useChatPersistence<T>(
-  options: UseChatPersistenceOptions<T>
-): UseChatPersistenceResult {
-  const {
-    diskKey,
-    messages,
-    setMessages,
-    toDisk,
-    fromDisk,
-    pageSize = 30,
-    debounceMs = 800,
-  } = options;
-
-  const [diskTotal, setDiskTotal] = useState(0);
-  const [showSkeleton, setShowSkeleton] = useState(false);
-  const [displayCount, setDisplayCount] = useState(pageSize);
-  const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const messagesRef = useRef(messages);
-  const diskKeyRef = useRef(diskKey);
-  const fromDiskRef = useRef(fromDisk);
-
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
-  useEffect(() => {
-    diskKeyRef.current = diskKey;
-  }, [diskKey]);
-
-  useEffect(() => {
-    fromDiskRef.current = fromDisk;
-  }, [fromDisk]);
-
-  // Keep displayCount >= messages.length so new messages are always visible
-  useEffect(() => {
-    if (messages.length > displayCount) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setDisplayCount(messages.length);
-    }
-  }, [messages.length, displayCount]);
-
-  // Debounced save to localStorage
-  useEffect(() => {
-    if (!diskKey || messages.length === 0) return;
-    const diskMsgs: DiskMsg[] = [];
-    for (const m of messages) {
-      const d = toDisk(m);
-      if (d) diskMsgs.push(d);
-    }
-    if (diskMsgs.length === 0) return;
-
-    if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
-    const key = diskKey;
-    saveDebounceRef.current = setTimeout(() => {
-      writeStored(key, diskMsgs);
-      setDiskTotal(diskMsgs.length);
-    }, debounceMs);
-
-    return () => {
-      if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, diskKey]);
-
-  // Load full history from localStorage on mount
-  const loadInitial = useCallback(async () => {
-    if (!diskKeyRef.current) return;
-    const stored = readStored(diskKeyRef.current);
-    if (stored.length > 0) {
-      setMessages(stored.map((m) => fromDiskRef.current(m)));
-      setDiskTotal(stored.length);
-      setDisplayCount(pageSize);
-    }
-  }, [pageSize, setMessages]);
-
-  // localStorage holds the full list, so older messages are already in memory
-  const loadOlderChat = useCallback(async (): Promise<number> => 0, []);
-
-  const handleScrollPagination = useCallback(
-    (container: HTMLDivElement) => {
-      if (container.scrollTop !== 0) return;
-      const total = messagesRef.current.length;
-      if (displayCount >= total) return;
-
-      setShowSkeleton(true);
-      const prevH = container.scrollHeight;
-      setTimeout(() => {
-        setShowSkeleton(false);
-        setDisplayCount((c) => Math.min(c + pageSize, messagesRef.current.length));
-        requestAnimationFrame(() => {
-          container.scrollTop = container.scrollHeight - prevH;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith(LEGACY_PREFIX)) continue;
+      try {
+        const diskMessages = readMessages(JSON.parse(localStorage.getItem(key) || '[]'));
+        if (!diskMessages.length) continue;
+        const serverId = key.slice(LEGACY_PREFIX.length);
+        conversations.push({
+          id: `legacy-${serverId}`,
+          serverId,
+          sessionKey: serverId,
+          title:
+            diskMessages
+              .find((m) => m.role === 'user')
+              ?.content.trim()
+              .split('\n')[0]
+              .slice(0, 32) || '',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: diskMessages.map(fromDisk),
         });
-      }, 300);
+      } catch {
+        // Recover other servers even if one old history is damaged.
+      }
+    }
+  } catch {
+    // Storage can be unavailable; keep the conversation usable in memory.
+  }
+  let active = conversations.find((c) => c.serverId === 'local');
+  if (!active) {
+    active = newConversation<T>('local');
+    conversations.push(active);
+  }
+  return { conversations, activeConversationId: active.id };
+}
+
+export function useChatPersistence<T>({
+  toDisk,
+  fromDisk,
+  debounceMs = 800,
+}: {
+  toDisk: (msg: T) => DiskMsg | null;
+  fromDisk: (msg: DiskMsg) => T;
+  debounceMs?: number;
+}) {
+  const [state, setState] = useState(() => loadConversations(fromDisk));
+  const stateRef = useRef(state);
+  const dirtyRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const writeStored = useCallback(
+    (value: ConversationState<T>) => {
+      localStorage.setItem(
+        CONVERSATIONS_STORAGE_KEY,
+        JSON.stringify({
+          version: 1,
+          ...value,
+          conversations: value.conversations.map((c) => ({
+            ...c,
+            messages: c.messages.map(toDisk).filter((m) => m !== null),
+          })),
+        })
+      );
     },
-    [displayCount, pageSize]
+    [toDisk]
   );
 
-  const resetDisplayCount = useCallback(() => {
-    setDisplayCount(pageSize);
-  }, [pageSize]);
-
-  const clearHistory = useCallback(async () => {
-    if (!diskKeyRef.current) return;
-    setDiskTotal(0);
+  const flush = useCallback(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    if (!dirtyRef.current) return;
     try {
-      localStorage.removeItem(STORAGE_PREFIX + diskKeyRef.current);
+      writeStored(stateRef.current);
+      dirtyRef.current = false;
     } catch {
-      /* ignore */
+      // Preserve cached rows and retry on the next change; no blocking dialog.
     }
+  }, [writeStored]);
+
+  const update = useCallback((next: ConversationState<T>) => {
+    stateRef.current = next;
+    dirtyRef.current = true;
+    setState(next);
   }, []);
 
+  useEffect(() => {
+    if (dirtyRef.current) timerRef.current = setTimeout(flush, debounceMs);
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [state, debounceMs, flush]);
+
+  useEffect(() => {
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+      flush();
+    };
+  }, [flush]);
+
+  const setMessages = useCallback(
+    (value: T[] | ((prev: T[]) => T[])) => {
+      const prev = stateRef.current;
+      const active = prev.conversations.find((c) => c.id === prev.activeConversationId)!;
+      const messages = typeof value === 'function' ? value(active.messages) : value;
+      if (messages === active.messages) return;
+      let title = '';
+      for (const message of messages) {
+        const diskMessage = toDisk(message);
+        if (diskMessage?.role !== 'user') continue;
+        title = diskMessage.content.trim().split('\n')[0].slice(0, 32);
+        break;
+      }
+      update({
+        ...prev,
+        conversations: prev.conversations.map((c) =>
+          c.id === active.id ? { ...c, messages, title, updatedAt: Date.now() } : c
+        ),
+      });
+    },
+    [toDisk, update]
+  );
+
+  const selectConversation = useCallback(
+    (id: string) => {
+      const prev = stateRef.current;
+      if (id === prev.activeConversationId || !prev.conversations.some((c) => c.id === id)) return;
+      flush();
+      update({ ...prev, activeConversationId: id });
+      flush();
+    },
+    [flush, update]
+  );
+
+  const createConversation = useCallback(
+    (serverId: string) => {
+      flush();
+      const c = newConversation<T>(serverId);
+      update({ activeConversationId: c.id, conversations: [c, ...stateRef.current.conversations] });
+      flush();
+    },
+    [flush, update]
+  );
+
+  const selectServer = useCallback(
+    (serverId: string) => {
+      const existing = stateRef.current.conversations
+        .filter((c) => c.serverId === serverId)
+        .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+      if (existing) selectConversation(existing.id);
+      else createConversation(serverId);
+    },
+    [selectConversation, createConversation]
+  );
+
+  const deleteConversation = useCallback(
+    async (id: string, cleanup?: () => Promise<void>) => {
+      const prev = stateRef.current;
+      const deleted = prev.conversations.find((c) => c.id === id);
+      if (!deleted) return;
+      flush();
+      const conversations = prev.conversations.filter((c) => c.id !== id);
+      let activeConversationId = prev.activeConversationId;
+      if (id === activeConversationId) {
+        let active = conversations
+          .filter((c) => c.serverId === deleted.serverId)
+          .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        if (!active) {
+          active = newConversation<T>(deleted.serverId);
+          conversations.unshift(active);
+        }
+        activeConversationId = active.id;
+      }
+      const next = { conversations, activeConversationId };
+      writeStored(next);
+      if (cleanup) {
+        try {
+          await cleanup();
+        } catch (error) {
+          try {
+            writeStored(prev);
+          } catch {
+            dirtyRef.current = true;
+          }
+          throw error;
+        }
+      }
+      update(next);
+      dirtyRef.current = false;
+    },
+    [flush, writeStored, update]
+  );
+
+  const activeConversation = state.conversations.find((c) => c.id === state.activeConversationId)!;
   return {
-    diskTotal,
-    showSkeleton,
-    displayCount,
-    resetDisplayCount,
-    loadInitial,
-    handleScrollPagination,
-    loadOlderChat,
-    clearHistory,
+    activeConversation,
+    activeConversationId: state.activeConversationId,
+    messages: activeConversation.messages,
+    conversations: state.conversations
+      .filter((c) => c.serverId === activeConversation.serverId)
+      .sort((a, b) => b.updatedAt - a.updatedAt),
+    setMessages,
+    selectConversation,
+    createConversation,
+    selectServer,
+    deleteConversation,
   };
 }

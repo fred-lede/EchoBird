@@ -25,6 +25,7 @@ const OAUTH_SCOPES: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 const OAUTH_TIMEOUT_SECONDS: u64 = 60;
 static PENDING_LOGIN: Mutex<Option<(String, CancellationToken)>> = Mutex::new(None);
+static TOKEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub fn start_login() -> Result<String, String> {
     let mut pending = PENDING_LOGIN.lock().map_err(|_| "accountError.busy")?;
@@ -144,13 +145,14 @@ fn jwt_is_expired(token: &str) -> bool {
         .is_some_and(|expiry| expiry <= chrono::Utc::now().timestamp())
 }
 
-async fn refresh_auth_tokens(auth: &mut Value) -> Result<(), String> {
+async fn refresh_auth_tokens_at(auth: &mut Value, token_url: &str) -> Result<(), String> {
     let refresh_token = auth
         .get("tokens")
         .and_then(|tokens| non_empty_string(tokens.get("refresh_token")))
         .ok_or_else(|| "accountError.loginRequired".to_string())?;
     let response = reqwest::Client::new()
-        .post(OAUTH_TOKEN_URL)
+        .post(token_url)
+        .timeout(std::time::Duration::from_secs(30))
         .header(reqwest::header::ACCEPT, "application/json")
         .header(reqwest::header::USER_AGENT, "Codex Desktop")
         .header("originator", "Codex Desktop")
@@ -163,13 +165,14 @@ async fn refresh_auth_tokens(auth: &mut Value) -> Result<(), String> {
         .await
         .map_err(|error| format!("accountError.network|{error}"))?;
     let status = response.status();
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|error| format!("accountError.format|{error}"))?;
+    let body = response.json::<Value>().await;
     if !status.is_success() {
-        return Err(format!("accountError.auth|HTTP {}", status.as_u16()));
+        return Err(super::account_model_sources::oauth_refresh_error(
+            status.as_u16(),
+            body.as_ref().unwrap_or(&Value::Null),
+        ));
     }
+    let body = body.map_err(|error| format!("accountError.format|{error}"))?;
     apply_refreshed_tokens(auth, &body)
 }
 
@@ -197,9 +200,10 @@ fn apply_refreshed_tokens(auth: &mut Value, body: &Value) -> Result<(), String> 
 async fn request_usage(
     access_token: &str,
     account_id: Option<&str>,
+    usage_url: &str,
 ) -> Result<reqwest::Response, String> {
     let mut request = reqwest::Client::new()
-        .get(USAGE_URL)
+        .get(usage_url)
         .bearer_auth(access_token)
         .header(reqwest::header::ACCEPT, "application/json")
         .header(reqwest::header::USER_AGENT, "Codex Desktop")
@@ -457,18 +461,7 @@ fn effective_snapshot(auth_path: &Path, backup_path: &Path) -> Result<(Vec<u8>, 
 }
 
 fn write_private_file(path: &Path, raw: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("accountError.write|{error}"))?;
-    }
-    fs::write(path, raw).map_err(|error| format!("accountError.write|{error}"))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("accountError.write|{error}"))?;
-    }
-    Ok(())
+    super::native_account_files::write_private_file(path, raw)
 }
 
 fn save_snapshot(raw: &[u8], auth: &Value, store_dir: &Path) -> Result<AccountMetadata, String> {
@@ -649,11 +642,16 @@ pub(crate) fn save_effective_snapshot_at(
 pub fn capture_current_account() -> Result<CodexAccountSummary, String> {
     let codex_dir = codex_home()?;
     let state_dir = echobird_dir()?;
-    save_effective_snapshot_at(
+    let summary = save_effective_snapshot_at(
         &codex_dir.join("auth.json"),
         &state_dir.join(LEGACY_BACKUP_FILE),
         &state_dir.join("codex-accounts"),
-    )
+    )?;
+    super::smart_router::forget_account_authentication(
+        crate::models::model::AccountProvider::Codex,
+        &summary.id,
+    );
+    Ok(summary)
 }
 
 fn valid_account_id(account_id: &str) -> bool {
@@ -792,6 +790,10 @@ fn store_oauth_token_response(token_response: &Value) -> Result<CodexAccountSumm
     let raw =
         serde_json::to_vec_pretty(&auth).map_err(|error| format!("accountError.format|{error}"))?;
     let metadata = save_snapshot(&raw, &auth, &account_store_dir()?)?;
+    super::smart_router::forget_account_authentication(
+        crate::models::model::AccountProvider::Codex,
+        &metadata.id,
+    );
     Ok(build_summary(metadata, None, &account_store_dir()?))
 }
 
@@ -925,6 +927,13 @@ fn list_accounts_at(
     store_dir: &Path,
 ) -> Result<Vec<CodexAccountSummary>, String> {
     let active_id = active_account_id(auth_path);
+    list_saved_accounts_at(store_dir, active_id.as_deref())
+}
+
+fn list_saved_accounts_at(
+    store_dir: &Path,
+    active_id: Option<&str>,
+) -> Result<Vec<CodexAccountSummary>, String> {
     if !store_dir.exists() {
         return Ok(Vec::new());
     }
@@ -941,7 +950,10 @@ fn list_accounts_at(
         let Ok(metadata) = metadata_from_auth(&auth, &raw) else {
             continue;
         };
-        accounts.push(build_summary(metadata, active_id.as_deref(), store_dir));
+        if entry.path().file_stem().and_then(|name| name.to_str()) != Some(metadata.id.as_str()) {
+            continue;
+        }
+        accounts.push(build_summary(metadata, active_id, store_dir));
     }
     accounts.sort_by(|left, right| left.email.to_lowercase().cmp(&right.email.to_lowercase()));
     Ok(accounts)
@@ -950,6 +962,133 @@ fn list_accounts_at(
 pub fn list_accounts() -> Result<Vec<CodexAccountSummary>, String> {
     let codex_dir = codex_home()?;
     list_accounts_at(&codex_dir.join("auth.json"), &account_store_dir()?)
+}
+
+pub(crate) fn list_saved_accounts() -> Result<Vec<CodexAccountSummary>, String> {
+    list_saved_accounts_at(&account_store_dir()?, None)
+}
+
+pub(crate) async fn proxy_credentials(
+    account_id: &str,
+    force_refresh: bool,
+) -> Result<Value, String> {
+    proxy_credentials_at(
+        &account_store_dir()?,
+        account_id,
+        force_refresh,
+        OAUTH_TOKEN_URL,
+    )
+    .await
+}
+
+pub(crate) async fn proxy_credentials_after_rejection(
+    account_id: &str,
+    rejected_credentials: &Value,
+) -> Result<Value, String> {
+    let rejected_token = rejected_credentials["accessToken"]
+        .as_str()
+        .filter(|token| !token.is_empty())
+        .ok_or("accountError.loginRequired")?;
+    proxy_credentials_with_rejection_at(
+        &account_store_dir()?,
+        account_id,
+        true,
+        OAUTH_TOKEN_URL,
+        Some(rejected_token),
+    )
+    .await
+}
+
+async fn proxy_credentials_at(
+    store_dir: &Path,
+    account_id: &str,
+    force_refresh: bool,
+    token_url: &str,
+) -> Result<Value, String> {
+    proxy_credentials_with_rejection_at(store_dir, account_id, force_refresh, token_url, None).await
+}
+
+async fn proxy_credentials_with_rejection_at(
+    store_dir: &Path,
+    account_id: &str,
+    force_refresh: bool,
+    token_url: &str,
+    rejected_token: Option<&str>,
+) -> Result<Value, String> {
+    let guard = TOKEN_LOCK.lock().await;
+    if !valid_account_id(account_id) {
+        return Err("accountError.invalidAccount".into());
+    }
+    let path = store_dir.join(format!("{account_id}.json"));
+    let (raw, auth) = read_oauth_snapshot(&path).ok_or("accountError.invalidAccount")?;
+    if metadata_from_auth(&auth, &raw)?.id != account_id {
+        return Err("accountError.invalidAccount".into());
+    }
+    let token =
+        non_empty_string(auth["tokens"].get("access_token")).ok_or("accountError.loginRequired")?;
+    let (_, auth, _guard) = if force_refresh
+        && (rejected_token.is_none() || rejected_token == Some(token.as_str()))
+        || jwt_is_expired(&token)
+    {
+        finish_token_rotation(
+            path,
+            account_id.to_owned(),
+            raw,
+            auth,
+            token_url.to_owned(),
+            None,
+            guard,
+        )
+        .await?
+    } else {
+        (raw, auth, guard)
+    };
+    Ok(serde_json::json!({
+        "accessToken": non_empty_string(auth["tokens"].get("access_token")).ok_or("accountError.loginRequired")?,
+        "accountId": account_id_from_auth(&auth),
+    }))
+}
+
+async fn finish_token_rotation(
+    path: PathBuf,
+    account_id: String,
+    raw: Vec<u8>,
+    mut auth: Value,
+    token_url: String,
+    native_dir: Option<PathBuf>,
+    guard: tokio::sync::MutexGuard<'static, ()>,
+) -> Result<(Vec<u8>, Value, tokio::sync::MutexGuard<'static, ()>), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        if sender.is_closed() {
+            return;
+        }
+        // Once sent, a rotating grant must finish saving even if its caller leaves.
+        let result = async move {
+            refresh_auth_tokens_at(&mut auth, &token_url).await?;
+            let (latest_raw, latest_auth) =
+                read_oauth_snapshot(&path).ok_or("accountError.invalidAccount")?;
+            let saved_raw = if latest_raw != raw {
+                if metadata_from_auth(&latest_auth, &latest_raw)?.id != account_id {
+                    return Err("accountError.invalidAccount".into());
+                }
+                auth = latest_auth;
+                latest_raw
+            } else {
+                let refreshed_raw =
+                    serde_json::to_vec_pretty(&auth).map_err(|_| "accountError.write")?;
+                write_private_file(&path, &refreshed_raw)?;
+                if let Some(native_dir) = native_dir {
+                    persist_active_snapshot(&native_dir, &account_id, &refreshed_raw)?;
+                }
+                refreshed_raw
+            };
+            Ok((saved_raw, auth, guard))
+        }
+        .await;
+        let _ = sender.send(result);
+    });
+    receiver.await.map_err(|_| "accountError.network")?
 }
 
 fn switch_account_at(
@@ -1067,13 +1206,35 @@ pub async fn refresh_account_quota(account_id: &str) -> Result<CodexAccountSumma
     if !valid_account_id(account_id) {
         return Err("accountError.invalidAccount".to_string());
     }
-    let codex_dir = codex_home()?;
-    let store_dir = account_store_dir()?;
+    refresh_account_quota_at(
+        account_id,
+        &codex_home()?,
+        &account_store_dir()?,
+        OAUTH_TOKEN_URL,
+        USAGE_URL,
+    )
+    .await
+}
+
+async fn refresh_account_quota_at(
+    account_id: &str,
+    codex_dir: &Path,
+    store_dir: &Path,
+    token_url: &str,
+    usage_url: &str,
+) -> Result<CodexAccountSummary, String> {
+    let mut guard = TOKEN_LOCK.lock().await;
+    if !valid_account_id(account_id) {
+        return Err("accountError.invalidAccount".to_string());
+    }
     let saved_path = store_dir.join(format!("{account_id}.json"));
-    let raw = fs::read(&saved_path).map_err(|_| "accountError.invalidAccount".to_string())?;
+    let mut raw = fs::read(&saved_path).map_err(|_| "accountError.invalidAccount".to_string())?;
     let mut auth: Value = serde_json::from_slice(&raw)
         .map_err(|error| format!("accountError.invalidAccount|{error}"))?;
     let mut metadata = metadata_from_auth(&auth, &raw)?;
+    if metadata.id != account_id {
+        return Err("accountError.invalidAccount".into());
+    }
     let chatgpt_account_id = account_id_from_auth(&auth);
     let mut access_token = auth
         .get("tokens")
@@ -1081,30 +1242,42 @@ pub async fn refresh_account_quota(account_id: &str) -> Result<CodexAccountSumma
         .ok_or_else(|| "accountError.loginRequired".to_string())?;
 
     if jwt_is_expired(&access_token) {
-        refresh_auth_tokens(&mut auth).await?;
+        (raw, auth, guard) = finish_token_rotation(
+            saved_path.clone(),
+            account_id.to_owned(),
+            raw,
+            auth,
+            token_url.to_owned(),
+            Some(codex_dir.to_owned()),
+            guard,
+        )
+        .await?;
         access_token = auth
             .get("tokens")
             .and_then(|tokens| non_empty_string(tokens.get("access_token")))
             .ok_or_else(|| "accountError.format".to_string())?;
-        let refreshed_raw = serde_json::to_vec_pretty(&auth)
-            .map_err(|error| format!("accountError.write|{error}"))?;
-        write_private_file(&saved_path, &refreshed_raw)?;
-        persist_active_snapshot(&codex_dir, account_id, &refreshed_raw)?;
     }
 
-    let mut response = request_usage(&access_token, chatgpt_account_id.as_deref()).await?;
+    let mut response =
+        request_usage(&access_token, chatgpt_account_id.as_deref(), usage_url).await?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        refresh_auth_tokens(&mut auth).await?;
+        (raw, auth, guard) = finish_token_rotation(
+            saved_path.clone(),
+            account_id.to_owned(),
+            raw,
+            auth,
+            token_url.to_owned(),
+            Some(codex_dir.to_owned()),
+            guard,
+        )
+        .await?;
         access_token = auth
             .get("tokens")
             .and_then(|tokens| non_empty_string(tokens.get("access_token")))
             .ok_or_else(|| "accountError.format".to_string())?;
-        let refreshed_raw = serde_json::to_vec_pretty(&auth)
-            .map_err(|error| format!("accountError.write|{error}"))?;
-        write_private_file(&saved_path, &refreshed_raw)?;
-        persist_active_snapshot(&codex_dir, account_id, &refreshed_raw)?;
-        response = request_usage(&access_token, chatgpt_account_id.as_deref()).await?;
+        response = request_usage(&access_token, chatgpt_account_id.as_deref(), usage_url).await?;
     }
+    let _guard = guard;
     let status = response.status();
     let body: Value = response
         .json()
@@ -1115,22 +1288,150 @@ pub async fn refresh_account_quota(account_id: &str) -> Result<CodexAccountSumma
     }
     metadata.subscription_end_at = metadata_from_auth(&auth, &raw)?.subscription_end_at;
     let plan = non_empty_string(body.get("plan_type")).or_else(|| metadata.plan.clone());
-    let quota_cache =
-        quota_cache_from_usage(&body, plan, read_quota_cache(&store_dir, account_id))?;
+    let quota_cache = quota_cache_from_usage(&body, plan, read_quota_cache(store_dir, account_id))?;
     write_private_file(
-        &quota_path(&store_dir, account_id),
+        &quota_path(store_dir, account_id),
         serde_json::to_string(&quota_cache)
             .map_err(|error| format!("accountError.quota|{error}"))?
             .as_bytes(),
     )?;
 
     let active_id = active_account_id(&codex_dir.join("auth.json"));
-    Ok(build_summary(metadata, active_id.as_deref(), &store_dir))
+    Ok(build_summary(metadata, active_id.as_deref(), store_dir))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_credential_replacement_leaves_the_previous_file_intact() {
+        let root =
+            std::env::temp_dir().join(format!("echobird-auth-write-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("auth.json");
+        let previous = root.join("previous.json");
+        fs::write(&path, b"original credential").unwrap();
+        fs::hard_link(&path, &previous).unwrap();
+        assert_eq!(fs::read(&previous).unwrap(), b"original credential");
+
+        write_private_file(&path, b"rotated credential").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"rotated credential");
+        let preserved = fs::read(&previous).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(preserved, b"original credential");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_credential_replacement_preserves_a_native_symbolic_link() {
+        let root =
+            std::env::temp_dir().join(format!("echobird-auth-link-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("actual.json");
+        let path = root.join("auth.json");
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o750)).unwrap();
+        std::os::unix::fs::symlink("actual.json", &path).unwrap();
+        write_private_file(&path, b"rotated credential").unwrap();
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"rotated credential");
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+        write_private_file(&path, b"rotated again").unwrap();
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), b"rotated again");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_credential_replacement_waits_for_a_briefly_held_target() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root =
+            std::env::temp_dir().join(format!("echobird-auth-held-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("auth.json");
+        fs::write(&path, b"original credential").unwrap();
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(held);
+        });
+        let result = write_private_file(&path, b"rotated credential");
+        release.join().unwrap();
+        let saved = fs::read(&path).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(saved, b"rotated credential");
+    }
+
+    #[tokio::test]
+    async fn refresh_rejection_retains_credential_failure_without_replacing_tokens() {
+        use axum::{http::StatusCode, routing::post, Router};
+        for (status, error, expected) in [
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error":{"code":"refresh_token_reused"}}).to_string(),
+                "accountError.loginRequired|HTTP 400",
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error":"invalid_grant"}).to_string(),
+                "accountError.loginRequired|HTTP 400",
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error":{"code":"invalid_request"}}).to_string(),
+                "accountError.auth|HTTP 400",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "<html>Service unavailable</html>".into(),
+                "accountError.auth|HTTP 503",
+            ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Rate limited".into(),
+                "accountError.auth|HTTP 429",
+            ),
+        ] {
+            let app = Router::new().route("/token", post(move || async move { (status, error) }));
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/token", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let mut auth = serde_json::json!({
+                "tokens":{"access_token":"expired-fixture","refresh_token":"fixture-refresh"}
+            });
+            let original = auth.clone();
+            let error = refresh_auth_tokens_at(&mut auth, &url).await.unwrap_err();
+            assert_eq!(error, expected);
+            assert_eq!(
+                super::super::account_model_sources::credential_error(error).status,
+                if expected.starts_with("accountError.loginRequired") {
+                    StatusCode::UNAUTHORIZED
+                } else {
+                    status
+                }
+            );
+            assert_eq!(auth, original);
+            server.abort();
+        }
+    }
 
     #[tokio::test]
     async fn cancelled_login_drops_pending_callback_and_releases_port() {
@@ -1227,6 +1528,468 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn proxy_token_rotation_survives_caller_cancellation() {
+        use axum::{
+            http::{HeaderMap, StatusCode},
+            routing::{get, post},
+            Json, Router,
+        };
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use tokio::sync::Notify;
+
+        for mode in [
+            "complete",
+            "not-started",
+            "prepared",
+            "cancel",
+            "queued",
+            "deadline",
+            "concurrent",
+            "replace",
+            "delete",
+            "quota-expired-complete",
+            "quota-expired-cancel",
+            "quota-expired-replace",
+            "quota-expired-delete",
+            "quota-rejected",
+        ] {
+            let dir = temp_dir(mode);
+            let mut auth: Value = serde_json::from_slice(&oauth(
+                "fixture@example.test",
+                "fixture-account",
+                "fixture-refresh",
+            ))
+            .unwrap();
+            let token = jwt(json!({
+                "exp":if mode.starts_with("quota-expired") { 0 } else { chrono::Utc::now().timestamp()+3600 },
+                "https://api.openai.com/auth":{"chatgpt_account_id":"fixture-account"}
+            }));
+            auth["tokens"]["access_token"] = json!(token);
+            let raw = serde_json::to_vec(&auth).unwrap();
+            let metadata = save_snapshot(&raw, &auth, &dir).unwrap();
+            let path = dir.join(format!("{}.json", metadata.id));
+            let native = dir.join("native").join("auth.json");
+            write_private_file(&native, &raw).unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let usage_calls = Arc::new(AtomicUsize::new(0));
+            let received = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let deadline = Arc::new(Notify::new());
+            let observed = calls.clone();
+            let entered = received.clone();
+            let unblock = release.clone();
+            let next = jwt(json!({
+                "rotation":1,"exp":chrono::Utc::now().timestamp()+3600,
+                "https://api.openai.com/auth":{"chatgpt_account_id":"fixture-account"}
+            }));
+            let next_response = next.clone();
+            let reads = usage_calls.clone();
+            let rejected = format!("Bearer {token}");
+            let app = Router::new().route(
+                "/token",
+                post(move |Json(body): Json<Value>| {
+                    let received = entered.clone();
+                    let release = unblock.clone();
+                    let call = observed.fetch_add(1, Ordering::SeqCst);
+                    let access = next_response.clone();
+                    async move {
+                        assert_eq!(body["refresh_token"], "fixture-refresh");
+                        received.notify_one();
+                        if call == 0 {
+                            release.notified().await;
+                        }
+                        Json(json!({"access_token":access,"refresh_token":"rotated-refresh"}))
+                    }
+                }),
+            ).route("/usage", get(move |headers: HeaderMap| {
+                reads.fetch_add(1, Ordering::SeqCst);
+                let status = if headers.get("authorization").and_then(|value| value.to_str().ok()) == Some(rejected.as_str()) {
+                    StatusCode::UNAUTHORIZED
+                } else {
+                    StatusCode::OK
+                };
+                async move { (status, Json(json!({"plan_type":"free","rate_limit":{"primary_window":{"used_percent":10}}}))) }
+            }));
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/token", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            if matches!(mode, "not-started" | "prepared") {
+                {
+                    let credentials = proxy_credentials_with_rejection_at(
+                        &dir,
+                        &metadata.id,
+                        true,
+                        &url,
+                        Some(&token),
+                    );
+                    tokio::pin!(credentials);
+                    if mode == "prepared" {
+                        assert!(futures_util::poll!(&mut credentials).is_pending());
+                    }
+                }
+                let guard =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), TOKEN_LOCK.lock())
+                        .await
+                        .unwrap();
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                assert_eq!(fs::read(&path).unwrap(), raw);
+                drop(guard);
+                server.abort();
+                fs::remove_dir_all(dir).unwrap();
+                continue;
+            }
+            let args = (dir.clone(), metadata.id.clone(), url.clone(), token.clone());
+            let trigger = deadline.clone();
+            let caller = tokio::spawn(async move {
+                let credentials = async {
+                    if mode.starts_with("quota") {
+                        refresh_account_quota_at(
+                            &args.1,
+                            &args.0.join("native"),
+                            &args.0,
+                            &args.2,
+                            &format!("{}/usage", args.2.trim_end_matches("/token")),
+                        )
+                        .await
+                        .map(|summary| serde_json::to_value(summary).unwrap())
+                    } else {
+                        proxy_credentials_with_rejection_at(
+                            &args.0,
+                            &args.1,
+                            true,
+                            &args.2,
+                            Some(&args.3),
+                        )
+                        .await
+                    }
+                };
+                tokio::pin!(credentials);
+                tokio::select! {
+                    result = &mut credentials => result,
+                    _ = trigger.notified() => {
+                        assert!(tokio::time::timeout(
+                            std::time::Duration::from_millis(10),
+                            &mut credentials,
+                        ).await.is_err());
+                        Err("fixture-deadline".into())
+                    }
+                }
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), received.notified())
+                .await
+                .unwrap();
+            if mode == "queued" {
+                let args = (dir.clone(), metadata.id.clone(), url.clone());
+                let entered = Arc::new(Notify::new());
+                let pending = entered.clone();
+                let queued = tokio::spawn(async move {
+                    pending.notify_one();
+                    proxy_credentials_at(&args.0, &args.1, true, &args.2).await
+                });
+                entered.notified().await;
+                queued.abort();
+                assert!(queued.await.unwrap_err().is_cancelled());
+            }
+            let second = if mode == "concurrent" {
+                let args = (dir.clone(), metadata.id.clone(), url.clone(), token.clone());
+                Some(tokio::spawn(async move {
+                    proxy_credentials_with_rejection_at(
+                        &args.0,
+                        &args.1,
+                        true,
+                        &args.2,
+                        Some(&args.3),
+                    )
+                    .await
+                }))
+            } else {
+                None
+            };
+            if matches!(mode, "complete" | "queued" | "quota-expired-complete") {
+                release.notify_one();
+                let result = caller.await.unwrap().unwrap();
+                if mode == "quota-expired-complete" {
+                    assert_eq!(result["quotaPercent"], 90);
+                } else {
+                    assert_eq!(result["accessToken"], next);
+                }
+            } else {
+                if mode == "deadline" {
+                    deadline.notify_one();
+                    assert_eq!(caller.await.unwrap().unwrap_err(), "fixture-deadline");
+                } else {
+                    caller.abort();
+                    assert!(caller.await.unwrap_err().is_cancelled());
+                }
+                if mode.ends_with("replace") {
+                    auth["tokens"]["access_token"] = json!("new-login-access");
+                    auth["tokens"]["refresh_token"] = json!("new-login-refresh");
+                    write_private_file(&path, &serde_json::to_vec(&auth).unwrap()).unwrap();
+                } else if mode.ends_with("delete") {
+                    fs::remove_file(&path).unwrap();
+                }
+                release.notify_one();
+                let guard =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), TOKEN_LOCK.lock())
+                        .await
+                        .unwrap();
+                drop(guard);
+            }
+            if let Some(second) = second {
+                assert_eq!(
+                    tokio::time::timeout(std::time::Duration::from_secs(5), second)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap()["accessToken"],
+                    next
+                );
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{mode}");
+            assert_eq!(
+                usage_calls.load(Ordering::SeqCst),
+                usize::from(matches!(mode, "quota-expired-complete" | "quota-rejected")),
+                "{mode}"
+            );
+            if mode.ends_with("delete") {
+                assert!(!path.exists());
+            } else {
+                let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                if mode.ends_with("replace") {
+                    assert_eq!(saved["tokens"], auth["tokens"]);
+                } else {
+                    assert_eq!(saved["tokens"]["access_token"], next, "{mode}");
+                    assert_eq!(
+                        saved["tokens"]["refresh_token"], "rotated-refresh",
+                        "{mode}"
+                    );
+                }
+            }
+            let native_auth: Value = serde_json::from_slice(&fs::read(&native).unwrap()).unwrap();
+            if mode.starts_with("quota") && !mode.ends_with("replace") && !mode.ends_with("delete")
+            {
+                assert_eq!(native_auth["tokens"]["access_token"], next, "{mode}");
+                assert_eq!(
+                    native_auth["tokens"]["refresh_token"], "rotated-refresh",
+                    "{mode}"
+                );
+            } else {
+                assert_eq!(fs::read(&native).unwrap(), raw, "{mode}");
+            }
+            server.abort();
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_reads_only_saved_credentials_and_serializes_own_store_rotation() {
+        use axum::{
+            http::{HeaderMap, StatusCode},
+            routing::any,
+            Json, Router,
+        };
+        use std::sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let root = temp_dir("proxy-isolation");
+        let dir = root.join("saved");
+        let native = root.join("native.json");
+        fs::write(&native, b"native-fixture-untouched").unwrap();
+        let native_hash = Sha256::digest(fs::read(&native).unwrap());
+        let mut auth: Value =
+            serde_json::from_slice(&oauth("fixture@example.test", "account", "refresh")).unwrap();
+        let token = jwt(
+            json!({"exp":chrono::Utc::now().timestamp()+3600,"https://api.openai.com/auth":{"chatgpt_account_id":"account"}}),
+        );
+        auth["tokens"]["access_token"] = json!(token);
+        let raw = serde_json::to_vec(&auth).unwrap();
+        let metadata = save_snapshot(&raw, &auth, &dir).unwrap();
+        let own_path = dir.join(format!("{}.json", metadata.id));
+        let own_before = fs::read(&own_path).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let next = jwt(
+            json!({"rotation":1,"exp":chrono::Utc::now().timestamp()+3600,"https://api.openai.com/auth":{"chatgpt_account_id":"account"}}),
+        );
+        let next_response = next.clone();
+        let failed_refresh = Arc::new(AtomicBool::new(false));
+        let failed = failed_refresh.clone();
+        let replaced_during_refresh = Arc::new(AtomicBool::new(false));
+        let replace = replaced_during_refresh.clone();
+        let replacement_token = jwt(
+            json!({"rotation":2,"exp":chrono::Utc::now().timestamp()+3600,"https://api.openai.com/auth":{"chatgpt_account_id":"account"}}),
+        );
+        let mut replacement = auth.clone();
+        replacement["tokens"]["access_token"] = json!(replacement_token);
+        replacement["tokens"]["refresh_token"] = json!("replacement-refresh");
+        let replacement_raw = serde_json::to_vec(&replacement).unwrap();
+        let replacement_path = own_path.clone();
+        let rejected_requests = Arc::new(AtomicUsize::new(0));
+        let rejected_count = rejected_requests.clone();
+        let rejected_barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let old_authorization = format!("Bearer {token}");
+        let app = Router::new()
+            .route(
+                "/inference",
+                any(move |headers: HeaderMap| {
+                    let barrier = rejected_barrier.clone();
+                    let rejected_count = rejected_count.clone();
+                    let rejected = headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                        == Some(old_authorization.as_str());
+                    async move {
+                        if rejected {
+                            rejected_count.fetch_add(1, Ordering::SeqCst);
+                            barrier.wait().await;
+                            StatusCode::UNAUTHORIZED
+                        } else {
+                            StatusCode::OK
+                        }
+                    }
+                }),
+            )
+            .fallback(any(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                if replace.load(Ordering::SeqCst) {
+                    write_private_file(&replacement_path, &replacement_raw).unwrap();
+                }
+                let body = json!({"access_token":next_response,"refresh_token":"next-refresh"});
+                let status = if failed.load(Ordering::SeqCst) {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::OK
+                };
+                async move { (status, Json(body)) }
+            }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let rows = list_saved_accounts_at(&dir, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].active);
+        assert!(rows[0].quota_percent.is_none());
+        assert!(!serde_json::to_string(&rows).unwrap().contains(&token));
+        assert_eq!(
+            proxy_credentials_at(&dir, &metadata.id, false, &url)
+                .await
+                .unwrap()["accessToken"],
+            token
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fs::read(&own_path).unwrap(), own_before);
+        assert!(proxy_credentials_at(&dir, &"f".repeat(64), false, &url)
+            .await
+            .is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let mut mismatched = auth.clone();
+        mismatched["tokens"]["account_id"] = json!("different-account");
+        mismatched["tokens"]["access_token"] = json!(jwt(
+            json!({"exp":chrono::Utc::now().timestamp()+3600,"https://api.openai.com/auth":{"chatgpt_account_id":"different-account"}})
+        ));
+        write_private_file(&own_path, &serde_json::to_vec(&mismatched).unwrap()).unwrap();
+        assert!(proxy_credentials_at(&dir, &metadata.id, false, &url)
+            .await
+            .is_err());
+        assert!(list_saved_accounts_at(&dir, None).unwrap().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        auth["tokens"]["access_token"] = json!(jwt(
+            json!({"exp":0,"https://api.openai.com/auth":{"chatgpt_account_id":"account"}})
+        ));
+        save_snapshot(&serde_json::to_vec(&auth).unwrap(), &auth, &dir).unwrap();
+        let (first, second) = tokio::join!(
+            proxy_credentials_at(&dir, &metadata.id, false, &url),
+            proxy_credentials_at(&dir, &metadata.id, false, &url),
+        );
+        assert_eq!(first.unwrap()["accessToken"], next);
+        assert_eq!(second.unwrap()["accessToken"], next);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let saved: Value = serde_json::from_slice(&fs::read(&own_path).unwrap()).unwrap();
+        assert_eq!(saved["tokens"]["refresh_token"], "next-refresh");
+
+        auth["tokens"]["access_token"] = json!(token);
+        save_snapshot(&serde_json::to_vec(&auth).unwrap(), &auth, &dir).unwrap();
+        let client = reqwest::Client::new();
+        let inference = || async {
+            let rejected = proxy_credentials_at(&dir, &metadata.id, false, &url)
+                .await
+                .unwrap();
+            let rejected_token = rejected["accessToken"].as_str().unwrap();
+            assert_eq!(
+                client
+                    .get(format!("{url}/inference"))
+                    .bearer_auth(rejected_token)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+            let latest = proxy_credentials_with_rejection_at(
+                &dir,
+                &metadata.id,
+                true,
+                &url,
+                Some(rejected_token),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                client
+                    .get(format!("{url}/inference"))
+                    .bearer_auth(latest["accessToken"].as_str().unwrap())
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::OK
+            );
+            latest
+        };
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(inference(), inference())
+        })
+        .await
+        .unwrap();
+        assert_eq!(first["accessToken"], next);
+        assert_eq!(second["accessToken"], next);
+        assert_eq!(rejected_requests.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        save_snapshot(&serde_json::to_vec(&auth).unwrap(), &auth, &dir).unwrap();
+        let before_failure = fs::read(&own_path).unwrap();
+        failed_refresh.store(true, Ordering::SeqCst);
+        assert!(
+            proxy_credentials_with_rejection_at(&dir, &metadata.id, true, &url, Some(&token))
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(fs::read(&own_path).unwrap(), before_failure);
+        failed_refresh.store(false, Ordering::SeqCst);
+        replaced_during_refresh.store(true, Ordering::SeqCst);
+        let latest =
+            proxy_credentials_with_rejection_at(&dir, &metadata.id, true, &url, Some(&token))
+                .await
+                .unwrap();
+        assert_eq!(latest["accessToken"], replacement_token);
+        let saved: Value = serde_json::from_slice(&fs::read(&own_path).unwrap()).unwrap();
+        assert_eq!(saved["tokens"]["refresh_token"], "replacement-refresh");
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(Sha256::digest(fs::read(&native).unwrap()), native_hash);
+        server.abort();
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn assert_recent_last_refresh(auth: &Value, before: chrono::DateTime<chrono::Utc>) {

@@ -27,12 +27,16 @@ import {
   workBuddyClaimedToday,
 } from '../AppManager/workBuddyDailyCredits';
 import { useNavigationStore } from '../../stores/navigationStore';
+import { useToolsStore } from '../../stores/toolsStore';
+import { useAccountCardCache } from './useAccountCardCache';
 import { ZCodeAccountProviderChoice } from '../AppManager/ZCodeAccountSection';
+import { MinimaxAccountRegionChoice } from '../AppManager/MinimaxAccountSection';
 import { DirectoryRow } from '../../components/DirectoryRow';
 import { SortableCard } from '../../components/SortableCard';
 import { QuotaCountdown } from '../AppManager/QuotaCountdown';
 import { accountPlanLabel } from '../AppManager/accountPlanLabel';
 import { useI18n } from '../../hooks/useI18n';
+import { useUsageClock } from '../../hooks/useUsageClock';
 import * as api from '../../api/tauri';
 import { accountError, isAccountAuthorizationError } from '../../utils/accountError';
 import { quotaColorClasses, quotaTone } from '../../utils/quotaColors';
@@ -54,12 +58,23 @@ export function AccountCard({
   dragHandle?: ReactNode;
 }) {
   const { t } = useI18n();
+  const now = useUsageClock(
+    account.claimStatusExpiresAt != null ||
+      account.metrics.some((metric) => Boolean(metric.resetLabel))
+  );
+  const currentClaimStatus =
+    account.claimStatusExpiresAt == null || account.claimStatusExpiresAt * 1000 > now;
+  const claimed = currentClaimStatus && (account.dailyClaimed ?? dailyClaimed);
   const name = [provider.name, account.detail].filter(Boolean).join(' · ');
+  const missingUsage = account.metrics.every(
+    (metric) => metric.value === '—' && metric.percent == null && metric.resetAt == null
+  );
   const singleMetric = account.metrics.length === 1;
   const balanceOnly =
     singleMetric &&
     account.metrics.every((metric) => metric.percent == null && metric.resetAt == null);
   const evenlySpaced = !account.authorizationFailed && account.metrics.length === 2 && !balanceOnly;
+  const compactMetrics = provider.id === 'minimax' && account.metrics.length > 3;
   return (
     <article
       aria-label={`${name} ${account.identity}`}
@@ -75,15 +90,21 @@ export function AccountCard({
           {account.claim && (
             <AccountSectionRewardButton
               email={account.identity}
-              claimed={dailyClaimed}
-              disabled={!provider.installed || provider.busy || account.refreshing}
+              claimed={claimed}
+              disabled={
+                !provider.installed ||
+                account.pending ||
+                provider.busy ||
+                account.refreshing ||
+                (currentClaimStatus && account.claimDisabled)
+              }
               onClaim={() => void account.claim!()}
             />
           )}
           <AccountSectionActions
             email={account.identity}
             refreshing={account.refreshing}
-            disabled={!provider.installed}
+            disabled={!provider.installed || account.pending}
             onRefresh={account.refresh}
             onDelete={account.remove}
           />
@@ -112,7 +133,9 @@ export function AccountCard({
                 </span>
               )}
               {account.plan && (
-                <span className="min-w-0 truncate leading-3">{accountPlanLabel(account.plan)}</span>
+                <span className="min-w-0 truncate leading-3">
+                  {provider.id === 'minimax' ? account.plan : accountPlanLabel(account.plan)}
+                </span>
               )}
             </span>
           )}
@@ -121,15 +144,18 @@ export function AccountCard({
           className={
             evenlySpaced
               ? 'contents'
-              : `flex min-h-0 flex-1 flex-col justify-center ${account.metrics.length === 2 ? 'gap-4' : 'gap-2'} ${balanceOnly || account.authorizationFailed ? 'items-center text-center' : ''}`
+              : `flex min-h-0 flex-1 flex-col justify-center ${compactMetrics ? 'gap-0' : account.metrics.length === 2 ? 'gap-4' : 'gap-2'} ${balanceOnly || account.authorizationFailed ? 'items-center text-center' : ''}`
           }
         >
           {account.authorizationFailed ? (
             <span role="status" className="text-sm font-semibold text-cyber-error">
               {t('accountCenter.authFailed')}
             </span>
-          ) : account.metrics.length === 0 ? (
-            <span role="status" className="text-center text-sm text-cyber-text-secondary">
+          ) : missingUsage ? (
+            <span
+              role="status"
+              className={`${evenlySpaced ? 'row-span-2 flex h-full items-center justify-center ' : ''}text-center text-sm text-cyber-text-secondary`}
+            >
               {t('model.noUsageData')}
             </span>
           ) : (
@@ -143,7 +169,10 @@ export function AccountCard({
                 (singleMetric &&
                   [t('accountCenter.quota'), t('agent.credits')].includes(metric.label));
               return (
-                <div key={index} className="flex w-full flex-shrink-0 flex-col gap-1">
+                <div
+                  key={index}
+                  className={`flex w-full flex-shrink-0 flex-col ${compactMetrics ? 'gap-0' : 'gap-1'}`}
+                >
                   <div
                     className={
                       balanceOnly
@@ -161,28 +190,30 @@ export function AccountCard({
                           {metric.label}
                         </span>
                       )}
-                      {provider.id === 'workbuddy' &&
-                        !dailyClaimed &&
+                      {(provider.id === 'workbuddy' ||
+                        (provider.id === 'traecn' && account.showUnclaimed)) &&
+                        !claimed &&
                         metric.label === t('agent.rewardCredits') && (
                           <span className="flex-shrink-0 text-[10px] font-semibold leading-[16px] text-cyber-text">
                             {t('agent.dailyCreditsUnclaimed')}
                           </span>
                         )}
-                      {metric.resetAt != null && (
-                        <QuotaCountdown
-                          resetAt={metric.resetAt}
-                          compact
-                          small
-                          label={t('accountCenter.reset')}
-                        />
-                      )}
+                      {metric.resetAt != null &&
+                        (!metric.resetLabel || metric.resetAt > now / 1000) && (
+                          <QuotaCountdown
+                            resetAt={metric.resetAt}
+                            compact
+                            small
+                            label={metric.resetLabel ?? t('accountCenter.reset')}
+                          />
+                        )}
                     </span>
                     <span
                       aria-label={hideLabel ? `${metric.label} ${metric.value}` : undefined}
-                      className={`block flex-shrink-0 ${loneBalance ? 'font-bold' : 'font-semibold'} tabular-nums ${balanceOnly ? 'text-2xl' : 'text-xs'} ${metric.percent != null ? colors.text : ''}`}
+                      className={`block ${metric.value === '—' ? 'min-w-0 truncate' : 'flex-shrink-0'} ${loneBalance ? 'font-bold' : 'font-semibold'} tabular-nums ${balanceOnly ? 'text-2xl' : 'text-xs'} ${metric.percent != null ? colors.text : ''}`}
                     >
                       {loneBalance && <span className="mr-2">{metric.label}</span>}
-                      {metric.value}
+                      {metric.value === '—' ? t('model.noUsageData') : metric.value}
                     </span>
                   </div>
                   {metric.percent != null ? (
@@ -192,17 +223,17 @@ export function AccountCard({
                       aria-valuemin={0}
                       aria-valuemax={100}
                       aria-valuenow={Math.max(0, Math.min(100, metric.percent))}
-                      className={`relative h-0 flex-shrink-0 rounded-full border-t-4 ${colors.track}`}
+                      className={`relative -my-px h-0 flex-shrink-0 rounded-full border-t-[6px] ${colors.track}`}
                     >
                       <div
-                        className={`quota-progress-fill absolute bottom-0 left-0 h-0 rounded-full border-t-4 ${colors.fill}`}
+                        className={`quota-progress-fill absolute bottom-0 left-0 h-0 rounded-full border-t-[6px] ${colors.fill}`}
                         style={{ width: `${Math.max(0, Math.min(100, metric.percent))}%` }}
                       />
                     </div>
-                  ) : metric.showProgress && !balanceOnly ? (
+                  ) : metric.showProgress && metric.value !== '—' && !balanceOnly ? (
                     <div
                       aria-hidden="true"
-                      className="h-0 flex-shrink-0 rounded-full border-t-4 border-cyber-border"
+                      className="-my-px h-0 flex-shrink-0 rounded-full border-t-[6px] border-cyber-border"
                     />
                   ) : null}
                 </div>
@@ -218,13 +249,18 @@ export function AccountCard({
 export function AccountCenterMain() {
   const context = useAppManager();
   const { t, locale } = useI18n();
-  const providers = accountCenterProviders(context, t, locale);
   const activePage = useNavigationStore((state) => state.activePage);
+  const toolsReady = useToolsStore((state) => state.hasScanned);
+  const { providers, loading } = useAccountCardCache(accountCenterProviders(context, t, locale), {
+    locale,
+    active: activePage === 'accounts',
+    toolsReady,
+    scanning: context.isScanning,
+  });
   const claimedToday = useWorkBuddyClaimedToday(
     activePage === 'accounts' &&
       providers.some((provider) => provider.accounts.some((account) => account.claim))
   );
-  const loading = providers.some((provider) => provider.loading);
   const { accountCardOrder: accountOrder, setAccountCardOrder: setAccountOrder } = context;
   const orderIndex = new Map(accountOrder.map((id, index) => [id, index]));
   const accounts = providers
@@ -340,6 +376,7 @@ export function AccountCenterTitleActions() {
   const context = useAppManager();
   const { t, locale } = useI18n();
   const activePage = useNavigationStore((state) => state.activePage);
+  const toolsReady = useToolsStore((state) => state.hasScanned) || context.detectedTools.length > 0;
   const providers = accountCenterProviders(context, t, locale);
   const latest = useRef(providers);
   const batch = useRef<symbol | null>(null);
@@ -365,9 +402,14 @@ export function AccountCenterTitleActions() {
       provider.accounts.map((account) => ({ providerId: provider.id, account }))
     );
   const blocked =
+    !toolsReady ||
+    context.isScanning ||
     context.isLaunching ||
     providers.some(
-      (provider) => provider.busy || provider.accounts.some((account) => account.refreshing)
+      (provider) =>
+        (provider.loading && !provider.loaded) ||
+        provider.busy ||
+        provider.accounts.some((account) => account.refreshing)
     );
   const run = async (action: 'refresh' | 'claim') => {
     if (batch.current || blocked || activePage !== 'accounts' || !accounts.length) return;
@@ -376,6 +418,7 @@ export function AccountCenterTitleActions() {
     setRunning(action);
     let authFailures = 0;
     let otherFailures = 0;
+    const claimedProviders = new Set<string>();
     const collectError = (error: unknown) => {
       if (isAccountAuthorizationError(error)) authFailures += 1;
       else otherFailures += 1;
@@ -387,9 +430,20 @@ export function AccountCenterTitleActions() {
           break;
         const provider = latest.current.find((provider) => provider.id === target.providerId);
         const account = provider?.accounts.find((account) => account.id === target.account.id);
-        if (!provider?.installed || provider.busy || !account || account.refreshing) continue;
+        if (
+          !provider?.installed ||
+          (provider.loading && !provider.loaded) ||
+          provider.busy ||
+          !account ||
+          account.refreshing
+        )
+          continue;
         if (action === 'claim') {
-          if (account.claim) await account.claim();
+          if (account.claim && !claimedProviders.has(provider.id)) {
+            const deviceClaimed = await account.claim();
+            if (deviceClaimed === true && batch.current === request)
+              claimedProviders.add(provider.id);
+          }
         } else {
           await account.refresh(collectError);
         }
@@ -513,18 +567,34 @@ export function AccountCenterPanel() {
                     busy: provider.busy,
                   }}
                   secondary={
-                    provider.busy ? (
+                    provider.busy &&
+                    provider.id === 'minimax' &&
+                    context.minimaxAccounts.login?.userCode ? (
+                      <span className="flex items-center gap-2">
+                        <span>
+                          {(provider.waitingLabel ?? t('agent.waitingForBrowser')).replace(
+                            '{seconds}',
+                            String(provider.remainingSeconds)
+                          )}
+                        </span>
+                        <span className="font-mono">{context.minimaxAccounts.login.userCode}</span>
+                      </span>
+                    ) : provider.busy ? (
                       (provider.waitingLabel ?? t('agent.waitingForBrowser')).replace(
                         '{seconds}',
                         String(provider.remainingSeconds)
                       )
                     ) : !provider.installed ? (
                       `${hostname} · ${t('status.notInstalled')}`
-                    ) : provider.id === 'zcode' ? (
+                    ) : provider.id === 'zcode' || provider.id === 'minimax' ? (
                       <span className="flex items-center gap-2">
                         <span className="min-w-0 truncate">{hostname}</span>
                         <span className="pointer-events-auto relative flex-shrink-0">
-                          <ZCodeAccountProviderChoice disabled={disabled} />
+                          {provider.id === 'minimax' ? (
+                            <MinimaxAccountRegionChoice disabled={disabled} />
+                          ) : (
+                            <ZCodeAccountProviderChoice disabled={disabled} />
+                          )}
                         </span>
                       </span>
                     ) : undefined

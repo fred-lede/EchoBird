@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { accountError, isAccountAuthorizationError } from '../../utils/accountError';
 import { useConfirm } from '../../components/ConfirmDialog';
 import { useI18n } from '../../hooks/useI18n';
@@ -51,6 +51,13 @@ export function useManagedAccounts<A extends ManagedAccount, L extends ManagedLo
   );
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [settledListKey, setSettledListKey] = useState<symbol | null>(null);
+  const [loadedScopes, setLoadedScopes] = useState(new Set<string>());
+  const [listFailed, setListFailed] = useState(false);
+  const [mutationRevision, setMutationRevision] = useState(0);
+  const navigation = `${scope}:${activePage}:${navigationKey}:${enabled}`;
+  // A repeated visit is pending before its zero-delay account read starts.
+  const listKey = useMemo(() => Symbol(navigation), [navigation]);
   const [refreshing, setRefreshing] = useState(new Set<string>());
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [login, setLogin] = useState<L | null>(null);
@@ -122,21 +129,32 @@ export function useManagedAccounts<A extends ManagedAccount, L extends ManagedLo
     const current = generation.current;
     const request = ++listRequest.current;
     setLoading(true);
+    setListFailed(false);
     try {
       const result = await clientRef.current.list();
       if (current !== generation.current || request !== listRequest.current) return;
       setRows((prev) => ({ ...prev, [scope]: result }));
+      setLoadedScopes((prev) => (prev.has(scope) ? prev : new Set(prev).add(scope)));
       return result;
     } catch (error) {
-      if (current === generation.current && request === listRequest.current) throw error;
+      if (current === generation.current && request === listRequest.current) {
+        setListFailed(true);
+        throw error;
+      }
     } finally {
-      if (current === generation.current && request === listRequest.current) setLoading(false);
+      if (current === generation.current && request === listRequest.current) {
+        setLoading(false);
+        setSettledListKey(listKey);
+      }
     }
-  }, [scope]);
+  }, [scope, listKey]);
 
   const invalidateList = () => {
     listRequest.current += 1;
     setLoading(false);
+    setSettledListKey(listKey);
+    setListFailed(false);
+    setMutationRevision((value) => value + 1);
   };
 
   useEffect(() => {
@@ -186,6 +204,7 @@ export function useManagedAccounts<A extends ManagedAccount, L extends ManagedLo
   };
 
   const finishLogin = async (account: A) => {
+    setMutationRevision((value) => value + 1);
     invalidateRefresh(account.id);
     setAuthorizationFailed(account.id, false);
     if (activePage !== 'accounts' && loginRevision.current === revision.current) select(account.id);
@@ -333,6 +352,7 @@ export function useManagedAccounts<A extends ManagedAccount, L extends ManagedLo
           ...prev,
           [scope]: (prev[scope] ?? []).map((a) => (a.id === updated.id ? updated : a)),
         }));
+        return updated;
       }
     } catch (error) {
       if (current === generation.current && requests.get(account.id) === request) {
@@ -390,7 +410,10 @@ export function useManagedAccounts<A extends ManagedAccount, L extends ManagedLo
     selectedId: enabled && !hasModel ? (selection[scope] ?? null) : null,
     select,
     busy,
-    loading,
+    loading: enabled && (loading || settledListKey !== listKey),
+    loaded: loadedScopes.has(scope),
+    readFailed: listFailed,
+    mutationRevision,
     refreshing,
     remainingSeconds,
     add,

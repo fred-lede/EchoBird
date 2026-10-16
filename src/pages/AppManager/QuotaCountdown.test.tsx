@@ -49,12 +49,13 @@ it.each([null, 0, -60])('hides unknown or expired compact countdown (%s)', async
   expect(renderer.toJSON()).toBeNull();
 });
 
-it('removes the compact countdown when it expires while other tools keep 0m', async () => {
+it('keeps subscription 0m while ordinary compact countdowns disappear on expiry', async () => {
   const resetAt = Date.now() / 1000 + 30;
   act(() => {
     renderer = create(
       <>
         <QuotaCountdown resetAt={resetAt} compact />
+        <QuotaCountdown resetAt={resetAt} compact keepZero />
         <QuotaCountdown resetAt={resetAt} />
       </>
     );
@@ -62,11 +63,24 @@ it('removes the compact countdown when it expires while other tools keep 0m', as
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
-  expect(renderer.root.findAllByType('span')).toHaveLength(2);
+  expect(renderer.root.findAllByType('span')).toHaveLength(3);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(60_000);
   });
   const spans = renderer.root.findAllByType('span');
-  expect(spans).toHaveLength(1);
-  expect(spans[0].children.join('')).toBe('0m');
+  expect(spans).toHaveLength(2);
+  expect(spans.map((span) => span.children.join(''))).toEqual(['0m', '0m']);
 });
+
+it.each([null, undefined])(
+  'keeps an unknown subscription countdown hidden (%s)',
+  async (resetAt) => {
+    act(() => {
+      renderer = create(<QuotaCountdown resetAt={resetAt} compact keepZero />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(renderer.toJSON()).toBeNull();
+  }
+);

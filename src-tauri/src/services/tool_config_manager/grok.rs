@@ -44,9 +44,8 @@ const GROK_PROFILE_NAME: &str = "echobird";
 const GROK_API_KEY_ENV: &str = "ECHOBIRD_GROK_API_KEY";
 
 fn grok_config_path() -> PathBuf {
-    dirs::home_dir()
+    super::super::grok_accounts::native_home()
         .unwrap_or_default()
-        .join(".grok")
         .join("config.toml")
 }
 

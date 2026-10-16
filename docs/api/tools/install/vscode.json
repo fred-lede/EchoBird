@@ -15,6 +15,7 @@
         "linux_download": "Open https://code.visualstudio.com/Download in the browser and download the .deb / .rpm matching the user's distro.",
         "note": "GUI IDE — installation completes through a graphical wizard on Windows / macOS. Always tell the user the download location and ask them to follow the installer."
     },
+    "model_configuration": "VS Code 1.127 or newer is required. EchoBird configures VS Code's built-in Chat and Agent with a custom endpoint model and sets the default model for new built-in Chat conversations. For native Agent Sessions, select the EchoBird model in VS Code's model picker. The selected provider is contacted directly; no EchoBird gateway is required. Existing conversations retain their model. This does not configure independent AI extensions. Native user configuration is resolved on Windows, macOS and Linux; keep unrelated settings and existing models. Known native models use documented context limits; unknown endpoints use conservative limits and their Agent capacity is unverified. The default uses the raw model ID: configured ID conflicts are rejected; matching IDs from built-in providers may require selecting the EchoBird provider group in VS Code.",
     "install_flow": {
         "summary": "winget / brew / snap if available → otherwise download installer → user runs the wizard",
         "agent_steps": [
@@ -31,7 +32,7 @@
         "tell_user": [
             "Download location (full path) when manual",
             "That the installer was opened or that the package manager is installing silently",
-            "That Echobird does NOT switch models for VS Code — model selection lives in the user's chosen AI extension"
+            "That EchoBird supports model configuration for VS Code's built-in Chat and Agent; independent AI extensions keep their own settings"
         ]
     },
     "network_requirements": {

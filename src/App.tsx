@@ -4,7 +4,6 @@
 // All Providers are always mounted; pages are shown/hidden via CSS to avoid remounting.
 
 import { useState, useEffect } from 'react';
-import { RotateCcw } from 'lucide-react';
 import { getVersion } from '@tauri-apps/api/app';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
@@ -50,7 +49,8 @@ import {
 import { MotherAgentProvider, MotherAgentMain, MotherAgentPanel } from './pages/MotherAgent';
 import { FeedbackMain } from './pages/Feedback';
 import { MyProjectsMain, MyProjectsPanel, MyProjectsBottom } from './pages/MyProjects';
-import { AiCareerMain, AiCareerPanel, AiCareerTitleActions } from './pages/AiCareer';
+import { AiCareerMain, AiCareerFamilyPanel, AiCareerTitleActions } from './pages/AiCareer';
+import { AiPulseProvider, AiPulseTitleActions, AiPulsePanel, AiNewsMain } from './pages/AiPulse';
 import { useMyProjectsStore } from './stores/myProjectsStore';
 import {
   AccountCenterMain,
@@ -94,7 +94,7 @@ const page = (active: boolean) => (active ? 'contents' : 'hidden');
 const pageBlock = (active: boolean) => (active ? 'flex-1 flex flex-col overflow-hidden' : 'hidden');
 const pageScroll = (active: boolean) => (active ? 'flex-1 overflow-y-auto page-scroll' : 'hidden');
 
-function App() {
+function AppContent() {
   const { t, locale, setLocale } = useI18n();
   const [showSettings, setShowSettings] = useState(false);
   const [showChangelog, setShowChangelog] = useState(false);
@@ -239,6 +239,11 @@ function App() {
     document.documentElement.classList.toggle('window-maximized', isMaximized);
   }, [isMaximized]);
 
+  useEffect(() => {
+    document.documentElement.classList.toggle('local-llm-page', activePage === 'localLlm');
+    return () => document.documentElement.classList.remove('local-llm-page');
+  }, [activePage]);
+
   const is = (p: PageType) => activePage === p;
 
   return (
@@ -281,17 +286,20 @@ function App() {
                                       {is('apps') && t('page.appManager')}
                                       {is('myProjects') && t('page.myProjects')}
                                       {is('aiCareer') && t('page.aiCareer')}
+                                      {is('aiNews') && t('page.aiNews')}
                                       {is('localLlm') && t('page.localServer')}
                                       {is('mother') && t('page.motherAgent')}
                                       {is('feedback') && t('page.feedback')}
                                     </h2>
                                     <div className="page-kicker truncate" aria-hidden="true">
-                                      {is('models') && 'ROSTER'}
+                                      {is('models') && 'MODELS'}
                                       {is('accounts') && 'ACCOUNTS'}
-                                      {is('freeModels') && 'SMART ROUTER'}
+                                      {is('freeModels') &&
+                                        (locale.startsWith('zh') ? 'ACCESS' : 'ROUTER')}
                                       {is('apps') && 'DESKTOP'}
                                       {is('myProjects') && 'VIBE CODING'}
                                       {is('aiCareer') && 'CAREER'}
+                                      {is('aiNews') && 'NEWS'}
                                       {is('localLlm') && 'RUNTIME'}
                                       {is('mother') && 'AGENT'}
                                       {is('feedback') && 'SUPPORT'}
@@ -310,23 +318,12 @@ function App() {
                                   <span className={page(is('aiCareer'))}>
                                     <AiCareerTitleActions />
                                   </span>
+                                  <span className={page(is('aiNews'))}>
+                                    <AiPulseTitleActions />
+                                  </span>
                                   <span className={page(is('apps'))}>
                                     <AppManagerTitleActions />
                                   </span>
-
-                                  {is('mother') && (
-                                    <div className="ml-auto flex-shrink-0 flex items-center gap-2">
-                                      <button
-                                        onClick={() =>
-                                          window.dispatchEvent(new CustomEvent('clear-chat'))
-                                        }
-                                        className="text-sm px-3 py-1.5 border border-cyber-border/50 rounded-md text-cyber-text hover:bg-cyber-text/10 transition-colors flex items-center gap-2"
-                                      >
-                                        <RotateCcw size={13} />
-                                        {t('btn.clear')}
-                                      </button>
-                                    </div>
-                                  )}
                                 </div>
 
                                 {/* Page content — always mounted, CSS hidden */}
@@ -357,8 +354,11 @@ function App() {
                                 <div className={pageBlock(is('localLlm'))}>
                                   <LocalServerMain />
                                 </div>
-                                <div className={pageScroll(is('aiCareer'))}>
+                                <div className={pageBlock(is('aiCareer'))}>
                                   <AiCareerMain />
+                                </div>
+                                <div className={pageBlock(is('aiNews'))}>
+                                  <AiNewsMain />
                                 </div>
                                 {/* MotherAgent: always mounted, hidden via CSS to preserve chat state */}
                                 <div
@@ -390,7 +390,10 @@ function App() {
                                 <LocalServerPanel />
                               </div>
                               <div className={page(is('aiCareer'))}>
-                                <AiCareerPanel />
+                                <AiCareerFamilyPanel />
+                              </div>
+                              <div className={page(is('aiNews'))}>
+                                <AiPulsePanel />
                               </div>
                               {/* MotherAgent panel: always mounted, hidden via CSS */}
                               <div className={!is('mother') ? 'hidden' : 'contents'}>
@@ -437,6 +440,15 @@ function App() {
         </ConfirmDialogProvider>
       </FreeModelsProvider>
     </ToastProvider>
+  );
+}
+
+function App() {
+  const activePage = useNavigationStore((s) => s.activePage);
+  return (
+    <AiPulseProvider active={activePage === 'aiNews'}>
+      <AppContent />
+    </AiPulseProvider>
   );
 }
 

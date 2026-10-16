@@ -1,0 +1,5 @@
+{
+    "configFile": "~/.copilot/data.db",
+    "format": "sqlite",
+    "custom": true
+}

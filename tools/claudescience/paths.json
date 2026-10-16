@@ -1,14 +1,14 @@
 {
     "name": "Claude Science",
     "category": "Science",
-    "noModelConfig": true,
+    "noModelConfig": false,
     "apiProtocol": [
         "anthropic"
     ],
     "docs": "https://claude.com/product/claude-science",
     "website": "https://claude.com/product/claude-science",
     "command": "",
-    "startCommand": "claude-science serve",
+    "startCommand": "claude-science serve --detached --no-browser",
     "configDir": "~/.claude-science",
     "configFile": "~/.claude-science/preferences.json",
     "requireConfigFile": false,
@@ -17,6 +17,7 @@
             "%LOCALAPPDATA%/Programs/ClaudeScience/claude-science.exe"
         ],
         "darwin": [
+            "/Applications/Claude Science.app/Contents/Resources/bin/claude-science",
             "/Applications/Claude Science.app/Contents/MacOS/Claude Science"
         ],
         "linux": [

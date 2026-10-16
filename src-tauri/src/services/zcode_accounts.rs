@@ -379,6 +379,10 @@ pub async fn list() -> Result<Vec<Account>, String> {
         .collect())
 }
 
+pub(crate) fn list_saved_accounts() -> Result<Vec<Account>, String> {
+    Ok(load()?.values().map(|saved| row(saved, None)).collect())
+}
+
 fn http() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -867,6 +871,58 @@ pub async fn refresh(account_id: &str) -> Result<Account, String> {
     let result = row(saved, active.as_deref());
     save(&accounts)?;
     Ok(result)
+}
+
+fn proxy_value(saved: &Saved, account_id: &str) -> Result<Value, String> {
+    let device_mid = device_mid()?;
+    Ok(json!({
+        "accountId": account_id,
+        "site": saved.provider,
+        "jwtToken": saved.jwt_token,
+        "deviceMid": device_mid,
+    }))
+}
+
+pub(crate) async fn proxy_credentials(
+    account_id: &str,
+    force_refresh: bool,
+) -> Result<Value, String> {
+    let _guard = ACCOUNT_LOCK.lock().await;
+    let mut accounts = load()?;
+    let saved = accounts
+        .get_mut(account_id)
+        .ok_or("accountError.invalidAccount")?;
+    if force_refresh {
+        if let Some(current) = native_account()
+            .ok()
+            .flatten()
+            .filter(|row| id(row) == account_id)
+        {
+            if current.access_token != saved.access_token || current.jwt_token != saved.jwt_token {
+                saved.access_token = current.access_token;
+                saved.refresh_token = current.refresh_token;
+                saved.jwt_token = current.jwt_token;
+                save(&accounts)?;
+            }
+        }
+    }
+    proxy_value(
+        accounts
+            .get(account_id)
+            .ok_or("accountError.invalidAccount")?,
+        account_id,
+    )
+}
+
+pub(crate) async fn proxy_credentials_after_rejection(
+    account_id: &str,
+    rejected: &Value,
+) -> Result<Value, String> {
+    let latest = proxy_credentials(account_id, true).await?;
+    if latest["jwtToken"] == rejected["jwtToken"] {
+        return Err("accountError.loginRequired".into());
+    }
+    Ok(latest)
 }
 
 #[cfg(test)]

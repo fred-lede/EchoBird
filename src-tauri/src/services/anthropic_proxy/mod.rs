@@ -22,7 +22,10 @@
 // proxy reads it fresh on every request so model switches need no
 // proxy restart.
 
-pub use messages_handler::{handle_messages, handle_messages_claudecode};
+pub use messages_handler::{
+    handle_messages, handle_messages_claudecode, handle_messages_claudescience,
+    handle_models_claudescience,
+};
 pub use server::AppState;
 
 mod messages_handler;

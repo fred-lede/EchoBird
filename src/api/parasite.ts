@@ -15,12 +15,12 @@ export async function parasiteSendMessage(request: ParasiteSendRequest): Promise
   return invoke('parasite_send_message', { request });
 }
 
-export async function parasiteAbort(agentId: string): Promise<boolean> {
-  return invoke('parasite_abort', { agentId });
+export async function parasiteAbort(agentId: string, conversationId?: string): Promise<boolean> {
+  return invoke('parasite_abort', { agentId, conversationId });
 }
 
-export async function parasiteReset(agentId: string): Promise<void> {
-  return invoke('parasite_reset', { agentId });
+export async function parasiteReset(agentId: string, conversationId?: string): Promise<void> {
+  return invoke('parasite_reset', { agentId, conversationId });
 }
 
 export function listenParasiteEvents(handler: (event: ParasiteEvent) => void): Promise<UnlistenFn> {

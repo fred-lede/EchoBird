@@ -105,7 +105,7 @@ describe('ZCode account section', () => {
     expect(markup.match(/"Pro"/g)).toHaveLength(1);
     expect(markup).not.toMatch(/"title"|tooltip|cursor-/);
     act(() => renderer.update(element(fixture(null))));
-    expect(JSON.stringify(renderer.toJSON())).toContain('—');
+    expect(JSON.stringify(renderer.toJSON())).toContain('model.noUsageData');
     expect(JSON.stringify(renderer.toJSON())).not.toContain('"children":["0%"]');
     act(() => renderer.update(element(fixture(0))));
     expect(JSON.stringify(renderer.toJSON())).toContain('"children":["0%"]');

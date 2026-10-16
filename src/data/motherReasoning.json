@@ -1,0 +1,46 @@
+[
+  {
+    "models": ["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "o1", "o3", "o3-mini", "o4-mini"],
+    "protocols": ["openai"],
+    "levels": ["low", "medium", "high"],
+    "thinking": null
+  },
+  {
+    "models": ["gpt-5.2", "gpt-5.4", "gpt-5.5"],
+    "protocols": ["openai"],
+    "levels": ["low", "medium", "high", "xhigh"],
+    "thinking": null
+  },
+  {
+    "models": ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4.1-flash"],
+    "protocols": ["openai", "anthropic"],
+    "levels": ["low", "high", "max"],
+    "thinking": "enabled"
+  },
+  {
+    "models": ["claude-opus-4-5"],
+    "protocols": ["anthropic"],
+    "levels": ["low", "medium", "high"],
+    "thinking": null
+  },
+  {
+    "models": ["claude-opus-4-6", "claude-sonnet-4-6"],
+    "protocols": ["anthropic"],
+    "levels": ["low", "medium", "high", "max"],
+    "thinking": "adaptive"
+  },
+  {
+    "models": [
+      "claude-opus-4-7",
+      "claude-opus-4-8",
+      "claude-opus-5",
+      "claude-opus-5-5",
+      "claude-sonnet-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5"
+    ],
+    "protocols": ["anthropic"],
+    "levels": ["low", "medium", "high", "xhigh", "max"],
+    "thinking": "adaptive"
+  }
+]

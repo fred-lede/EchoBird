@@ -51,11 +51,11 @@
   </tr>
   <tr>
     <td width="150" align="center">
-      <a href="https://grooroute.com/register?aff=FWGVPMYENJQ8"><img src="docs/sponsors/grooroute.png" width="92" alt="GrooRoute" /></a>
+      <a href="https://grooroute.pro/sign-up?aff=FWGVPMYENJQ8"><img src="docs/sponsors/grooroute.png" width="92" alt="GrooRoute Pro" /></a>
     </td>
     <td>
-      <a href="https://grooroute.com/register?aff=FWGVPMYENJQ8"><strong>GrooRoute</strong></a> — Official Claude and GPT models<br/>
-      Thanks to <strong>GrooRoute</strong> for sponsoring this project! Official Claude and GPT models are now available. We invite everyone with a curious mind to explore advanced AI, including Fable 5 and GPT-5.6. Connect directly from mainland China and get started with a single line of configuration — <a href="https://grooroute.com/register?aff=FWGVPMYENJQ8">sign up here</a>.
+      <a href="https://grooroute.pro/sign-up?aff=FWGVPMYENJQ8"><strong>GrooRoute Pro</strong></a> — Official Claude and GPT models<br/>
+      Thanks to <strong>GrooRoute Pro</strong> for sponsoring this project! Official Claude and GPT models are now available. We invite everyone with a curious mind to explore advanced AI, including GPT-6.1 Sol, Claude Opus 5.5, Claude Sonnet 5.5, Claude Fable 5.1, GPT-6 Sol, GPT-6 Astra, GPT-6 Luna, DeepSeek V4.1 Flash and Grok 4.7. Connect directly from mainland China and get started with a single line of configuration — <a href="https://grooroute.pro/sign-up?aff=FWGVPMYENJQ8">sign up here</a>.
     </td>
   </tr>
   <tr>

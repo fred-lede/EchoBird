@@ -1,8 +1,15 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
+import * as api from '../../api/tauri';
 import type { LocalTool, ModelConfig } from '../../api/types';
 import type { TKey } from '../../i18n';
+import { ModelListCard } from '../../components/ModelListCard';
+import vscodeDefinition from '../../../tools/vscode/paths.json';
+import qoderDefinition from '../../../tools/qoder/paths.json';
+import qoderCnDefinition from '../../../tools/qodercn/paths.json';
+import claudeScienceDefinition from '../../../tools/claudescience/paths.json';
 import { useNavigationStore } from '../../stores/navigationStore';
 import { AppManagerContext, type AppManagerContextType } from './context';
 import { AccountSectionRow } from './AccountSectionPrimitives';
@@ -51,24 +58,64 @@ const labels: Partial<Record<TKey, string>> = {
 };
 
 describe('ModelListSection', () => {
-  it('hides the router when smart routing is turned off', async () => {
+  it.each([
+    ['qoder', qoderDefinition],
+    ['qodercn', qoderCnDefinition],
+  ])('shows configured API models for %s', async (toolId, definition) => {
     vi.stubGlobal('__APP_EDITION__', 'full');
     const { ModelListSection } = await import('./AppManagerComponents');
+    expect(definition.noModelConfig).toBe(false);
     const markup = renderToStaticMarkup(
       <ModelListSection
-        smartRouterEnabled={false}
-        selectedToolData={tool}
+        selectedToolData={{ ...tool, ...definition, id: toolId }}
         userModels={models}
-        toolModelConfig={{ 'test-tool': 'smart-router' }}
-        selectedTool="test-tool"
+        toolModelConfig={{}}
+        selectedTool={toolId}
         handleSelectModel={vi.fn()}
         t={(key) => key}
       />
     );
-    expect(markup).not.toContain('Auto Router');
-    expect(markup).not.toContain('127.0.0.1:53683');
     expect(markup).toContain('Cloud Model');
+    expect(markup).toContain('deepseek-flash');
   });
+  it('shows Anthropic models and the official login for Claude Science', async () => {
+    vi.stubGlobal('__APP_EDITION__', 'full');
+    const { ModelListSection } = await import('./AppManagerComponents');
+    expect(claudeScienceDefinition.noModelConfig).toBe(false);
+    const markup = renderToStaticMarkup(
+      <ModelListSection
+        selectedToolData={{ ...tool, ...claudeScienceDefinition, id: 'claudescience' }}
+        userModels={[{ ...models[0], anthropicUrl: 'https://cloud.example/anthropic' }]}
+        toolModelConfig={{}}
+        selectedTool="claudescience"
+        handleSelectModel={vi.fn()}
+        t={(key) => key}
+      />
+    );
+    expect(markup).toContain('Cloud Model');
+    expect(markup).toContain('Anthropic Official');
+  });
+  it.each(['test-tool', 'codex', 'chatgptdesktop'])(
+    'hides the router for %s when smart routing is turned off',
+    async (toolId) => {
+      vi.stubGlobal('__APP_EDITION__', 'full');
+      const { ModelListSection } = await import('./AppManagerComponents');
+      const markup = renderToStaticMarkup(
+        <ModelListSection
+          smartRouterEnabled={false}
+          selectedToolData={{ ...tool, id: toolId }}
+          userModels={models}
+          toolModelConfig={{ [toolId]: 'smart-router' }}
+          selectedTool={toolId}
+          handleSelectModel={vi.fn()}
+          t={(key) => key}
+        />
+      );
+      expect(markup).not.toContain('Auto Router');
+      expect(markup).not.toContain('127.0.0.1:53683');
+      expect(markup).toContain('Cloud Model');
+    }
+  );
   it('renders smart, local, and cloud models as one ordered list with compact badges', async () => {
     vi.stubGlobal('__APP_EDITION__', 'full');
     const { ModelListSection } = await import('./AppManagerComponents');
@@ -146,7 +193,7 @@ describe('ModelListSection', () => {
   });
 
   it.each(['codex', 'chatgptdesktop'])(
-    'hides Chat Completions-only local endpoints from %s',
+    'shows the Responses-capable router and hides the Chat-only local server from %s',
     async (toolId) => {
       vi.stubGlobal('__APP_EDITION__', 'full');
       const { ModelListSection } = await import('./AppManagerComponents');
@@ -161,10 +208,48 @@ describe('ModelListSection', () => {
         />
       );
 
-      expect(markup).not.toContain('Auto Router');
+      expect(markup).toContain('Auto Router');
+      expect(markup).toContain('127.0.0.1:53683/v1');
       expect(markup).not.toContain('Local Model');
       expect(markup).not.toContain('OpenAI Official');
       expect(markup).toContain('Cloud Model');
+    }
+  );
+
+  it.each(['codex', 'chatgptdesktop'])(
+    'selects the exact router card for %s without applying configuration',
+    async (toolId) => {
+      vi.stubGlobal('__APP_EDITION__', 'full');
+      const { ModelListSection } = await import('./AppManagerComponents');
+      const selectModel = vi.fn();
+      const applyModel = vi.spyOn(api, 'applyModelToTool');
+      const router = { ...models[2], modelId: 'auto' };
+      let renderer: ReactTestRenderer | undefined;
+      try {
+        act(() => {
+          renderer = create(
+            <ModelListSection
+              selectedToolData={{ ...tool, id: toolId }}
+              userModels={[router]}
+              toolModelConfig={{}}
+              selectedTool={toolId}
+              handleSelectModel={selectModel}
+              t={(key) => key}
+            />
+          );
+        });
+        expect(selectModel).not.toHaveBeenCalled();
+        expect(applyModel).not.toHaveBeenCalled();
+        const card = renderer!.root.findByType(ModelListCard);
+        expect(card.props.model).toEqual(router);
+        expect(card.props.subtitle).toBe('127.0.0.1:53683/v1');
+        act(() => card.findByType('button').props.onClick());
+        expect(selectModel).toHaveBeenCalledExactlyOnceWith(toolId, 'smart-router');
+        expect(applyModel).not.toHaveBeenCalled();
+      } finally {
+        act(() => renderer?.unmount());
+        applyModel.mockRestore();
+      }
     }
   );
 
@@ -186,6 +271,57 @@ describe('ModelListSection', () => {
     expect(markup).not.toContain('api.x.ai');
     expect(markup).toContain('Cloud Model');
     expect(markup).toContain('Local Model');
+  });
+});
+
+describe('VS Code model panel', () => {
+  it.each([false, true])('shows compatible models only when installed: %s', async (installed) => {
+    vi.stubGlobal('__APP_EDITION__', 'full');
+    const { AppManagerPanel, AppManagerBottom } = await import('./AppManagerComponents');
+    const { ModelNexusContext } = await import('../ModelNexus/context');
+    const { ConfirmDialogProvider } = await import('../../components/ConfirmDialog');
+    useNavigationStore.setState({ activePage: 'apps' });
+    const context = {
+      selectedTool: 'vscode',
+      selectedToolData: { ...vscodeDefinition, id: 'vscode', installed },
+      smartRouterEnabled: true,
+      userModels: [
+        ...models,
+        {
+          internalId: 'anthropic-model',
+          name: 'Anthropic Model',
+          modelId: 'anthropic-model-id',
+          baseUrl: '',
+          anthropicUrl: 'https://example.test/anthropic',
+          apiKey: '',
+        },
+      ],
+      toolModelConfig: { vscode: 'cloud-model' },
+      handleSelectModel: vi.fn(),
+      viewMode: 'desktop',
+      launchAfterApply: false,
+      agreedConfigPolicy: true,
+      isLaunching: false,
+    } as unknown as AppManagerContextType;
+    const markup = renderToStaticMarkup(
+      <ConfirmDialogProvider>
+        <ModelNexusContext.Provider value={{} as React.ContextType<typeof ModelNexusContext>}>
+          <AppManagerContext.Provider value={context}>
+            <AppManagerPanel />
+            <AppManagerBottom />
+          </AppManagerContext.Provider>
+        </ModelNexusContext.Provider>
+      </ConfirmDialogProvider>
+    );
+    for (const name of ['Cloud Model', 'Local Model', 'Auto Router', 'Anthropic Model']) {
+      expect(markup.includes(name)).toBe(installed);
+    }
+    expect(markup).not.toContain('agent.noModelConfig');
+    expect(markup).not.toContain('agent.addAccount');
+    expect(markup).not.toContain('role="switch"');
+    expect(markup).not.toContain('agent.restore');
+    expect(markup).toContain(installed ? 'btn.modifyOnly' : 'btn.installOneClick');
+    expect(context.handleSelectModel).not.toHaveBeenCalled();
   });
 });
 
@@ -217,7 +353,7 @@ describe('CodexAccountSection', () => {
       refreshingCodexAccountIds: new Set(),
       codexAuthorizationFailedIds: new Set(),
       addCodexAccount: async () => {},
-      refreshCodexAccountQuota: async () => {},
+      refreshCodexAccountQuota: async () => undefined,
       deleteCodexAccount: async () => {},
     };
 

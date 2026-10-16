@@ -81,37 +81,58 @@ fn my_projects_path() -> std::path::PathBuf {
 }
 
 /// Read the user-authored AI-project registry from ~/.echobird/projects.json.
-/// Returns an empty array when the file is missing/unreadable. The front-end
+/// Returns an empty array only when the file is missing. The front-end
 /// (`myProjectsStore`) owns the `MyProject` shape — we persist the array
 /// verbatim as JSON so the registry survives a webview-storage clear, can be
 /// backed up / hand-edited like the rest of ~/.echobird, and can be written by
 /// the "一键安装" agent. Replaces the old localStorage-only persistence.
 #[tauri::command]
-pub fn get_my_projects() -> serde_json::Value {
-    let path = my_projects_path();
-    if !path.exists() {
-        return serde_json::json!([]);
-    }
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!([])),
-        Err(e) => {
-            log::warn!("[MyProjects] Failed to read projects: {}", e);
-            serde_json::json!([])
+pub fn get_my_projects() -> Result<serde_json::Value, String> {
+    read_my_projects(&my_projects_path())
+}
+
+fn validate_my_projects(projects: &serde_json::Value) -> Result<(), String> {
+    let valid = projects.as_array().is_some_and(|rows| {
+        rows.iter().all(|row| {
+            ["id", "name", "launcherPath", "modelsJsonPath"]
+                .iter()
+                .all(|key| row[*key].is_string())
+        })
+    });
+    valid
+        .then_some(())
+        .ok_or_else(|| "PROJECTS_INVALID_DATA".into())
+}
+
+fn read_my_projects(path: &std::path::Path) -> Result<serde_json::Value, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if std::fs::symlink_metadata(path).is_ok() {
+                return Err("PROJECTS_READ_FAILED".into());
+            }
+            return Ok(serde_json::json!([]));
         }
-    }
+        Err(_) => return Err("PROJECTS_READ_FAILED".into()),
+    };
+    let projects = serde_json::from_slice(&bytes).map_err(|_| "PROJECTS_INVALID_DATA")?;
+    validate_my_projects(&projects)?;
+    Ok(projects)
 }
 
 /// Write the user-authored AI-project registry to ~/.echobird/projects.json
 /// (pretty-printed). The front-end sends the full array on every CRUD op.
 #[tauri::command]
 pub fn save_my_projects(projects: serde_json::Value) -> Result<(), String> {
-    let dir = echobird_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    }
+    save_my_projects_at(&my_projects_path(), &projects)
+}
+
+fn save_my_projects_at(path: &std::path::Path, projects: &serde_json::Value) -> Result<(), String> {
+    validate_my_projects(projects)?;
+    // Unknown existing data must never be replaced with an empty-load fallback.
+    read_my_projects(path)?;
     let json = serde_json::to_string_pretty(&projects).map_err(|e| e.to_string())?;
-    std::fs::write(my_projects_path(), json).map_err(|e| e.to_string())?;
-    Ok(())
+    crate::services::native_account_files::write_private_file(path, json.as_bytes())
 }
 
 fn avatar_path() -> std::path::PathBuf {
@@ -147,7 +168,80 @@ pub fn get_avatar() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::read_settings;
+    use super::{read_my_projects, read_settings, save_my_projects_at};
+
+    #[test]
+    fn project_registry_refuses_to_overwrite_unreadable_or_malformed_data() {
+        let root = std::env::temp_dir().join(format!("echobird-projects-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("projects.json");
+        assert_eq!(read_my_projects(&path).unwrap(), serde_json::json!([]));
+        assert!(!path.exists());
+        for original in ["[", "{}", "[null]", r#"[{"id":"missing-fields"}]"#] {
+            std::fs::write(&path, original).unwrap();
+            assert!(read_my_projects(&path).is_err());
+            assert!(save_my_projects_at(&path, &serde_json::json!([])).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(read_my_projects(&path).is_err());
+        assert!(save_my_projects_at(&path, &serde_json::json!([])).is_err());
+        assert!(path.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_registry_saves_valid_arrays_atomically_and_keeps_unknown_fields() {
+        let root = std::env::temp_dir().join(format!("echobird-projects-{}", uuid::Uuid::new_v4()));
+        let path = root.join("projects.json");
+        let projects = serde_json::json!([{"id":"one","name":"One","launcherPath":"/fixture/run",
+            "modelsJsonPath":"/fixture/models.json","extra":{"keep":true}}]);
+        save_my_projects_at(&path, &projects).unwrap();
+        assert_eq!(read_my_projects(&path).unwrap(), projects);
+        let previous = root.join("previous.json");
+        std::fs::hard_link(&path, &previous).unwrap();
+        save_my_projects_at(&path, &serde_json::json!([])).unwrap();
+        assert_eq!(read_my_projects(&path).unwrap(), serde_json::json!([]));
+        assert_eq!(read_my_projects(&previous).unwrap(), projects);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_registry_preserves_an_existing_symbolic_link_and_directory_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("echobird-project-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let target = root.join("actual.json");
+        let path = root.join("projects.json");
+        let projects = serde_json::json!([{"id":"one","name":"One","launcherPath":"/fixture/run",
+            "modelsJsonPath":"/fixture/models.json","extra":{"keep":true}}]);
+        std::fs::write(&target, serde_json::to_vec(&projects).unwrap()).unwrap();
+        std::os::unix::fs::symlink("actual.json", &path).unwrap();
+        assert_eq!(read_my_projects(&path).unwrap(), projects);
+        save_my_projects_at(&path, &serde_json::json!([])).unwrap();
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(read_my_projects(&target).unwrap(), serde_json::json!([]));
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+        std::fs::remove_file(&target).unwrap();
+        assert!(read_my_projects(&path).is_err());
+        assert!(save_my_projects_at(&path, &projects).is_err());
+        assert!(!target.exists());
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn first_install_defaults_to_dark_without_creating_settings() {

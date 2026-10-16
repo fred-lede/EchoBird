@@ -1,0 +1,34 @@
+{
+    "id": "musecode",
+    "displayName": "Muse Code",
+    "homepage": "https://dev.meta.ai/",
+    "docs": "https://dev.meta.ai/docs/overview",
+    "kind": "cli",
+    "platforms": ["windows", "macos", "linux"],
+    "install": {
+        "powershell (Windows — official installer)": "irm https://dev.meta.ai/install.ps1 | iex",
+        "bash (macOS / Linux — official installer)": "curl -fsSL https://dev.meta.ai/install.sh | bash",
+        "note": "Use the official installer for the host platform. The executable is muse. The default Windows launcher is %LOCALAPPDATA%\\Programs\\muse\\muse.cmd; on macOS and Linux it is ~/.local/bin/muse. Run the Unix installer with bash. Do not substitute an npm package or the Muse desktop app."
+    },
+    "install_flow": {
+        "summary": "Check the existing Muse Code, run the official installer, refresh detection, and verify.",
+        "agent_steps": [
+            "Detect OS and architecture. Check the existing muse command and the native launcher path before installing, and reuse a working Muse Code installation. Check the current official installation requirements when the host or shell is incompatible.",
+            "Run the matching official dev.meta.ai installer. Windows uses PowerShell; macOS and Linux use bash. Keep installer errors visible and do not report success after a failed installation.",
+            "After installation, refresh PATH or use the native launcher path and run muse --version. Refresh EchoBird tool detection and require Muse Code to be detected before reporting success.",
+            "Model selection uses EchoBird's existing App Manager. Applying a selected OpenAI-compatible API model writes Muse Code's settings.json under the default ~/.config/muse directory. Installation and passive navigation must not apply a model, start login, fetch quota, or modify account settings.",
+            "Use EchoBird's normal launch action for a launch test. It asks for a working directory and starts the detected muse command in that directory. Cancelling the directory picker aborts launch."
+        ]
+    },
+    "network_requirements": {
+        "test_urls": [
+            "https://dev.meta.ai/",
+            "https://dev.meta.ai/install.ps1",
+            "https://dev.meta.ai/install.sh"
+        ],
+        "mirrors": {}
+    },
+    "identity_guard": {
+        "description": "Muse Code is Meta's coding CLI from dev.meta.ai, launched with muse. The separate Muse desktop cloud agent is registered as muse in EchoBird; its macOS desktop installer and account behavior do not apply to this CLI."
+    }
+}

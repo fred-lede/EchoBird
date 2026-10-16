@@ -1,0 +1,5 @@
+{
+    "configFile": "~/.config/kilo/kilo.json",
+    "format": "json",
+    "custom": true
+}

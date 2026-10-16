@@ -20,10 +20,12 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 const RELAY_FILENAME: &str = "claudedesktop.json";
 const RELAY_FILENAME_CLAUDECODE: &str = "claudecode.json";
+const RELAY_FILENAME_CLAUDESCIENCE: &str = "claudescience.json";
 
 struct Relay {
     base_url: String,
     api_key: String,
+    model_name: Option<String>,
     /// Upstream's actual model id (e.g. "mimo-v2.5-pro"). When present
     /// we rewrite Claude Desktop's request model field to this. When
     /// absent the request goes through unchanged — works fine for
@@ -43,6 +45,35 @@ pub async fn handle_messages(state: State<AppState>, body: Bytes) -> Response {
 /// same Anthropic Messages API and would otherwise collide on /v1/messages.
 pub async fn handle_messages_claudecode(state: State<AppState>, body: Bytes) -> Response {
     handle_messages_with(state, body, RELAY_FILENAME_CLAUDECODE).await
+}
+
+pub async fn handle_messages_claudescience(state: State<AppState>, body: Bytes) -> Response {
+    handle_messages_with(state, body, RELAY_FILENAME_CLAUDESCIENCE).await
+}
+
+pub async fn handle_models_claudescience() -> Response {
+    let Some(relay) = read_relay(RELAY_FILENAME_CLAUDESCIENCE) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    science_models_response(&relay)
+}
+
+fn science_models_response(relay: &Relay) -> Response {
+    let Some(id) = relay.real_model_id.as_deref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    Json(json!({
+        "data": [{
+            "type": "model",
+            "id": id,
+            "display_name": relay.model_name.as_deref().unwrap_or(id),
+            "created_at": "1970-01-01T00:00:00Z"
+        }],
+        "first_id": id,
+        "last_id": id,
+        "has_more": false
+    }))
+    .into_response()
 }
 
 async fn handle_messages_with(
@@ -111,22 +142,7 @@ async fn handle_messages_with(
         req_body["model"] = Value::String(bare);
     }
 
-    // Reasoning-effort clamp — REQUIRED, do not remove. Claude Code's opus
-    // tiers request `output_config.effort: "xhigh"` by default, but
-    // third-party Anthropic-compatible upstreams accept only
-    // low/medium/high/max and reject the request with a 400
-    // ("output_config.effort ... got xhigh instead"), which surfaces to the
-    // user as "the model doesn't work". Downgrade xhigh → high (the
-    // universally-supported top tier). No-op for any other effort value.
-    if let Some(effort) = req_body
-        .get_mut("output_config")
-        .and_then(|c| c.get_mut("effort"))
-    {
-        if effort.as_str() == Some("xhigh") {
-            log::info!("[AnthropicProxy] Reasoning effort clamp: xhigh → high");
-            *effort = Value::String("high".to_string());
-        }
-    }
+    normalize_reasoning_effort(&mut req_body, &relay.base_url);
 
     // URL composition matches llm_client.rs:404 — handle every shape
     // users (and our model directory templates) realistically put in
@@ -211,6 +227,27 @@ async fn handle_messages_with(
     response
 }
 
+fn normalize_reasoning_effort(body: &mut Value, base_url: &str) {
+    if crate::services::reasoning_effort::supports_native_anthropic_effort(
+        base_url,
+        body["model"].as_str().unwrap_or_default(),
+        "xhigh",
+    ) {
+        return;
+    }
+    // Keep Claude clients' xhigh requests usable on compatible upstreams
+    // that only accept low/medium/high/max.
+    if let Some(effort) = body
+        .get_mut("output_config")
+        .and_then(|config| config.get_mut("effort"))
+    {
+        if effort.as_str() == Some("xhigh") {
+            log::info!("[AnthropicProxy] Reasoning effort clamp: xhigh → high");
+            *effort = Value::String("high".to_string());
+        }
+    }
+}
+
 fn read_relay(filename: &str) -> Option<Relay> {
     let path = relay_path(filename)?;
     let content = std::fs::read_to_string(&path).ok()?;
@@ -231,14 +268,84 @@ fn read_relay(filename: &str) -> Option<Relay> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
+    let model_name = parsed
+        .get("modelName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     Some(Relay {
         base_url,
         api_key,
+        model_name,
         real_model_id,
     })
 }
 
 fn relay_path(filename: &str) -> Option<PathBuf> {
     Some(dirs::home_dir()?.join(".echobird").join(filename))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn science_catalog_exposes_the_applied_model() {
+        let relay = Relay {
+            base_url: "https://example.test/anthropic".into(),
+            api_key: "secret".into(),
+            model_name: Some("DeepSeek Flash".into()),
+            real_model_id: Some("deepseek-flash".into()),
+        };
+        let response = science_models_response(&relay);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let catalog: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(catalog["data"][0]["id"], "deepseek-flash");
+        assert_eq!(catalog["data"][0]["display_name"], "DeepSeek Flash");
+        assert_eq!(catalog["has_more"], false);
+    }
+
+    #[test]
+    fn native_supported_xhigh_reaches_the_outbound_payload_unchanged() {
+        for model in ["claude-opus-5-5", "claude-opus-5-5-20261001"] {
+            let mut body = json!({"model":model,"output_config":{"effort":"xhigh","format":{"type":"text"}},
+                "thinking":{"type":"adaptive"},"max_tokens":32768,"messages":[{"role":"user","content":"fixture"}]});
+            let original = body.clone();
+            normalize_reasoning_effort(&mut body, "https://api.anthropic.com/v1");
+            assert_eq!(body, original, "{model} supports the requested effort");
+        }
+    }
+
+    #[test]
+    fn unknown_or_incompatible_upstreams_keep_the_existing_effort_fallback() {
+        for (base, model) in [
+            ("https://api.anthropic.com", "claude-opus-4-5"),
+            ("https://api.anthropic.com", "unknown"),
+            ("https://api.anthropic.com", "claude-opus-5-5-custom"),
+            ("https://relay.example/v1", "claude-opus-5-5"),
+            ("https://api.deepseek.com/anthropic", "claude-opus-5-5"),
+            ("https://api.anthropic.com.evil.test", "claude-opus-5-5"),
+            ("http://api.anthropic.com", "claude-opus-5-5"),
+            ("https://api.anthropic.com:8443", "claude-opus-5-5"),
+        ] {
+            let mut body = json!({"model":model,"output_config":{"effort":"xhigh","extra":true},"max_tokens":4096});
+            normalize_reasoning_effort(&mut body, base);
+            assert_eq!(body["output_config"]["effort"], "high", "{base} {model}");
+            assert_eq!(body["output_config"]["extra"], true);
+            assert_eq!(body["max_tokens"], 4096);
+        }
+        for mut body in [
+            json!({"model":"claude-opus-5-5"}),
+            json!({"model":"unknown","output_config":{"effort":"max"}}),
+            json!({"model":"unknown","output_config":{"effort":"high"}}),
+        ] {
+            let original = body.clone();
+            normalize_reasoning_effort(&mut body, "https://api.anthropic.com");
+            assert_eq!(body, original);
+        }
+    }
 }

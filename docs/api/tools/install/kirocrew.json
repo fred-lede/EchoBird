@@ -1,0 +1,28 @@
+{
+    "id": "kirocrew",
+    "displayName": "KiroCrew",
+    "homepage": "https://kiro.dev/crew/",
+    "docs": "https://kiro.dev/docs/crew/installation/",
+    "kind": "desktop_app",
+    "platforms": ["windows", "macos", "linux"],
+    "install": {
+        "version_manifest": "https://api.github.com/repos/kirodotdev/KiroCrew/releases/latest",
+        "windows_download": "Resolve the current stable release asset ending in -Setup-x64.exe.",
+        "macos_download": "Resolve the current stable universal.dmg asset for Intel and Apple Silicon.",
+        "linux_download": "Resolve the current stable amd64.deb / arm64.deb, x86_64.rpm / aarch64.rpm, or matching x86_64.AppImage / arm64.AppImage.",
+        "note": "Install the Crew desktop application. It includes the Gateway and a tested Kiro CLI. Do not substitute the Kiro IDE, a wheel, or an insider release for this desktop entry. Always resolve the current stable package and architecture."
+    },
+    "install_flow": {
+        "summary": "Detect platform and existing installation -> resolve the current official stable desktop package -> install -> verify the desktop executable.",
+        "agent_steps": [
+            "Detect OS, architecture and existing KiroCrew first. Do not reinstall a working client. Windows default is %LOCALAPPDATA%\\Programs\\KiroCrew\\KiroCrew.exe; also scan registry DisplayName prefixes KiroCrew. macOS is /Applications/KiroCrew.app or ~/Applications/KiroCrew.app. Linux uses the package's KiroCrew desktop entry.",
+            "Fetch install.version_manifest, require draft=false and prerelease=false, and choose the matching desktop asset from assets[].browser_download_url. Only use HTTPS official kirodotdev/KiroCrew release URLs. Windows stable desktop currently offers x64; macOS uses universal; Linux offers x64 and arm64. If no matching architecture exists, report the official limitation.",
+            "Windows: download the signed -Setup-x64.exe into the user's Downloads directory, verify its Authenticode signature, and run Start-Process -FilePath <installer> -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru. Check the exit code and resolved executable. The desktop includes its required CLI; do not install unrelated Python packages.",
+            "macOS: mount the universal DMG read-only with hdiutil attach -readonly -nobrowse, copy KiroCrew.app into ~/Applications with ditto, detach the volume, and verify the application signature and Gatekeeper assessment before launch. Preserve the location of an existing installation when updating.",
+            "Linux: install the architecture-matching deb using apt or rpm using dnf / zypper. For systems without a compatible package format, place the matching AppImage at ~/.local/bin/KiroCrew.AppImage and make it executable. Require glibc 2.34 or newer. Refresh desktop integration and confirm the actual desktop executable; do not install an incompatible architecture.",
+            "Refresh EchoBird detection and verify KiroCrew resolves to its installed desktop application. Report the version and executable path. A download alone does not establish installation."
+        ]
+    },
+    "identity_guard": {"description": "KiroCrew is the desktop personal agent from kiro.dev. Kiro IDE is a separate product. Kiro CLI is a separate terminal entry even though Crew bundles a tested CLI."},
+    "network_requirements": {"test_urls": ["https://kiro.dev/docs/crew/installation/", "https://api.github.com/repos/kirodotdev/KiroCrew/releases/latest"], "mirrors": {}}
+}

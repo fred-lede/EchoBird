@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     ["MINIMAX_DATA_DIR", "MAVIS_DATA_DIR"]
         .iter()
         .find_map(|key| std::env::var_os(key).filter(|v| !v.is_empty()))
@@ -127,7 +127,7 @@ fn clear_model_options(config: &mut Value) {
     }
 }
 
-fn select_official(config: &mut Value) {
+pub(crate) fn select_official(config: &mut Value) {
     // Let the native managed catalog choose its current default; preserve its models.
     config.as_object_mut().unwrap().remove("defaultModel");
     config.as_object_mut().unwrap().remove("defaultLightModel");

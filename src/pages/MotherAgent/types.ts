@@ -1,5 +1,6 @@
-import type { ModelConfig } from '../../api/types';
+import type { ModelConfig, ReasoningEffort } from '../../api/types';
 import type { BubbleChip } from '../../components/chat/ChatBubble';
+import type { ChatConversation } from '../../hooks/useChatPersistence';
 
 // ===== Types =====
 
@@ -36,9 +37,18 @@ export interface MotherAgentCtx {
   chatInput: string;
   setChatInput: (v: string) => void;
   chatOutput: ChatMessage[];
+  conversations: ChatConversation<ChatMessage>[];
+  activeConversationId: string;
+  createConversation: () => void;
+  selectConversation: (id: string) => void;
+  deleteConversation: (id: string) => Promise<void>;
   agentState: string;
   isProcessing: boolean;
+  isResetting: boolean;
   agentModelData: ModelConfig | undefined;
+  reasoningLevels: ReasoningEffort[];
+  reasoningEffort: ReasoningEffort | undefined;
+  setReasoningEffort: (effort: ReasoningEffort | undefined) => void;
   chatInputFocused: boolean;
   setChatInputFocused: (v: boolean) => void;
   chatCursorPos: number;
@@ -66,7 +76,6 @@ export interface MotherAgentCtx {
   removeSSHServer: (id: string) => void;
   selectedServerId: string;
   selectServer: (id: string) => void;
-  clearChat: () => void;
   abortAgent: () => void;
   maDiskTotal: number;
   loadOlderChat: () => Promise<ChatMessage[]>;

@@ -52,7 +52,7 @@
   {
     "id": "lfm2.5-1.2b-instruct",
     "name": "LFM2.5 1.2B Instruct",
-    "icon": "",
+    "icon": "liquid",
     "description": "Liquid AI 官方 1.2B 指令模型 — 32K 上下文，面向本地文本提取、RAG 和低内存设备",
     "huggingfaceRepo": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
     "variants": [
@@ -174,7 +174,7 @@
   {
     "id": "lfm2.5-2.6b",
     "name": "LFM2.5 2.6B",
-    "icon": "",
+    "icon": "liquid",
     "description": "Liquid AI 官方 2.6B 通用文本模型 — 128K 上下文、混合架构，面向本地聊天和长文本任务",
     "huggingfaceRepo": "LiquidAI/LFM2.5-2.6B-GGUF",
     "variants": [
@@ -523,7 +523,7 @@
   {
     "id": "lfm2.5-8b-a1b",
     "name": "LFM2.5 8B-A1B (MoE)",
-    "icon": "",
+    "icon": "liquid",
     "description": "Liquid AI 官方推理 MoE — 8.3B 总参数、约 1.5B 激活，128K 上下文，面向本地通用文本任务",
     "huggingfaceRepo": "LiquidAI/LFM2.5-8B-A1B-GGUF",
     "variants": [

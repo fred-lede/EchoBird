@@ -19,7 +19,8 @@ export const QuotaCountdown: React.FC<{
   small?: boolean;
   parenthesized?: boolean;
   label?: string;
-}> = ({ resetAt, compact, small, parenthesized, label }) => {
+  keepZero?: boolean;
+}> = ({ resetAt, compact, small, parenthesized, label, keepZero }) => {
   const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
     if (!resetAt) return;
@@ -30,12 +31,12 @@ export const QuotaCountdown: React.FC<{
       clearInterval(timer);
     };
   }, [resetAt]);
-  if (compact && (!resetAt || now === null || resetAt * 1000 <= now)) return null;
+  if (compact && (!resetAt || now === null || (!keepZero && resetAt * 1000 <= now))) return null;
   const countdown = resetAt && now !== null ? formatQuotaCountdown(resetAt, now, compact) : '';
   return (
     <span
       aria-label={label && countdown ? `${label} ${countdown}` : undefined}
-      className={`${compact ? '' : 'w-[64px] '}flex-shrink-0 text-center ${small ? 'text-[10px]' : 'text-[12px]'} font-semibold leading-[16px] text-cyber-text`}
+      className={`${compact ? '' : 'w-[64px] '}inline-flex flex-shrink-0 items-center justify-center align-middle text-center ${small ? 'text-[10px]' : 'text-[12px]'} font-semibold leading-[16px] text-cyber-text`}
     >
       {parenthesized && countdown ? `(${countdown})` : countdown}
     </span>

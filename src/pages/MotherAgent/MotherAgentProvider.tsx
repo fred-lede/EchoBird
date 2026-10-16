@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useI18n } from '../../hooks/useI18n';
 import * as api from '../../api/tauri';
-import type { ModelConfig, AgentEvent, ParasiteEvent } from '../../api/types';
+import type { ModelConfig, AgentEvent, ParasiteEvent, ReasoningEffort } from '../../api/types';
 import { useChatPersistence } from '../../hooks/useChatPersistence';
 import type { DiskMsg } from '../../hooks/useChatPersistence';
 import { errorToKey } from '../../utils/normalizeError';
 import type { BubbleChip } from '../../components/chat/ChatBubble';
 import type { ChatMessage } from './types';
-import { MA_PAGE_SIZE } from './types';
 import { MotherAgentContext } from './context';
 import { useToolsStore } from '../../stores/toolsStore';
 import { useNavigationStore } from '../../stores/navigationStore';
+import { useConfirm } from '../../components/ConfirmDialog';
+import { useToast } from '../../components/Toast';
+import { getReasoningLevels, loadReasoningPreferences, REASONING_STORAGE_KEY } from './reasoning';
 
 export function selectAgentProtocol(baseUrl: string, anthropicUrl?: string) {
   const useAnthropic = !baseUrl && !!anthropicUrl;
@@ -27,7 +29,9 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
   const { detectedTools: _detectedTools } = useToolsStore();
   const { activePage, motherPrefill: initialMessage, clearMotherPrefill } = useNavigationStore();
   const onAgentRunningChange = useNavigationStore((s) => s.setAgentRunning);
-  const { t: _t, locale } = useI18n(); // locale for agent hint; t for error messages
+  const { t, locale } = useI18n(); // locale for agent hint; t for error messages
+  const confirm = useConfirm();
+  const { showToast } = useToast();
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [agentModel, setAgentModelRaw] = useState<string | null>(() =>
     localStorage.getItem('echobird_agent_model')
@@ -38,9 +42,15 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
     else localStorage.removeItem('echobird_agent_model');
   }, []);
   const [chatInput, setChatInput] = useState('');
-  const [chatOutput, setChatOutput] = useState<ChatMessage[]>([]);
-  // Per-server chat history map
-  const chatHistoryMap = useRef<Map<string, ChatMessage[]>>(new Map());
+  const runningRef = useRef<{
+    sessionKey: string;
+    engine: string;
+    conversationId?: string;
+    requestId: string;
+    reasoningEffort?: ReasoningEffort;
+  } | null>(null);
+  const resettingRef = useRef(false);
+  const [isResetting, setIsResetting] = useState(false);
 
   // Parasite mode — when non-null, sendMessage delegates this turn to the
   // installed Claude Code CLI ('claudecode' is the only supported id today)
@@ -69,6 +79,30 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
   }, []);
 
   const [isProcessing, setIsProcessing] = useState(false);
+  const [reasoningPreferences, setReasoningPreferences] = useState(loadReasoningPreferences);
+  const reasoningModel = models.find((m) => m.internalId === agentModel);
+  const reasoningLevels = parasiteAgent ? [] : getReasoningLevels(reasoningModel);
+  // Include the actual model and endpoint, so editing a saved entry cannot reuse
+  // a previous provider's preference for a different model under the same ID.
+  const reasoningKey = reasoningModel
+    ? JSON.stringify([
+        reasoningModel.internalId,
+        reasoningModel.modelId || reasoningModel.name,
+        reasoningModel.baseUrl,
+        reasoningModel.anthropicUrl || '',
+      ])
+    : '';
+  const savedEffort = reasoningPreferences[reasoningKey];
+  const reasoningEffort = reasoningLevels.includes(savedEffort) ? savedEffort : undefined;
+  const setReasoningEffort = (effort: ReasoningEffort | undefined) => {
+    if (resettingRef.current || !reasoningLevels.length) return;
+    if (effort && !reasoningLevels.includes(effort)) return;
+    const next = { ...reasoningPreferences };
+    if (effort) next[reasoningKey] = effort;
+    else delete next[reasoningKey];
+    localStorage.setItem(REASONING_STORAGE_KEY, JSON.stringify(next));
+    setReasoningPreferences(next);
+  };
   const [agentState, setAgentState] = useState('idle');
   const [chatInputFocused, setChatInputFocused] = useState(false);
   const [chatCursorPos, setChatCursorPos] = useState(0);
@@ -79,6 +113,20 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
   // tear it down before it fires, dropping the input focus.
   const prefillFocusRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finishRun = useCallback(() => {
+    if (abortTimeoutRef.current) clearTimeout(abortTimeoutRef.current);
+    abortTimeoutRef.current = null;
+    runningRef.current = null;
+    setIsProcessing(false);
+    setAgentState('idle');
+  }, []);
+  useEffect(
+    () => () => {
+      if (prefillFocusRef.current) clearTimeout(prefillFocusRef.current);
+      if (abortTimeoutRef.current) clearTimeout(abortTimeoutRef.current);
+    },
+    []
+  );
 
   useEffect(() => {
     if (!initialMessage || activePage !== 'mother') return;
@@ -96,9 +144,6 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
   const [sshServers, setSSHServers] = useState<
     Array<{ id: string; host: string; port: string; username: string; alias?: string }>
   >([]);
-
-  // Server selection (single-select)
-  const [selectedServerId, setSelectedServerId] = useState('local');
 
   // Load saved SSH servers on mount
   useEffect(() => {
@@ -151,20 +196,9 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
     },
     []
   );
-  const removeSSHServer = useCallback(async (id: string) => {
-    setSSHServers((prev) => prev.filter((s) => s.id !== id));
-    setSelectedServerId((prev) => (prev === id ? 'local' : prev));
-    // Remove from backend
-    await api.removeSSHServerFromDisk(id).catch(() => {});
-    useNavigationStore.getState().bumpSshServersVersion();
-  }, []);
-
-  const prevServerRef = useRef('local');
-  const agentChatKey = (id: string) => `agent_${id}`;
-
   // Shared mapper: ChatMessage → disk format
   const toDisk = useCallback((m: ChatMessage): DiskMsg | null => {
-    if (m.type === 'user') return { role: 'user', content: m.text };
+    if (m.type === 'user') return { role: 'user', content: m.text, chips: m.chips };
     if (m.type === 'assistant') {
       // Skip transient status messages — they're not real chat history
       if (m.text.includes('__CONN_RETRY__') || m.text.includes('__CONN_FAILED__')) return null;
@@ -220,65 +254,58 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
     return {
       type: m.role === 'user' ? 'user' : 'assistant',
       text: m.content,
+      ...(m.role === 'user' ? { chips: m.chips } : {}),
     } as ChatMessage;
   }, []);
 
-  const prependMessages = useCallback((older: ChatMessage[]) => {
-    setChatOutput((prev) => [...older, ...prev]);
-  }, []);
-
-  const setMessagesFromDisk = useCallback((msgs: ChatMessage[]) => {
-    chatHistoryMap.current.set('local', msgs);
-    setChatOutput(msgs);
-  }, []);
-
   const persistence = useChatPersistence<ChatMessage>({
-    diskKey: agentChatKey(selectedServerId),
-    messages: chatOutput,
-    prependMessages,
-    setMessages: setMessagesFromDisk,
     toDisk,
     fromDisk,
-    pageSize: MA_PAGE_SIZE,
   });
-
-  // Load chat history from disk on mount
-  useEffect(() => {
-    persistence.loadInitial();
-    // Load history once on mount; `persistence` is re-created each render but
-    // loadInitial must run exactly once.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const {
+    messages: chatOutput,
+    setMessages: setChatOutput,
+    activeConversation,
+    selectServer: selectStoredServer,
+    createConversation: createStoredConversation,
+    selectConversation: selectStoredConversation,
+    activeConversationId,
+    deleteConversation: deleteStoredConversation,
+    conversations,
+  } = persistence;
+  const selectedServerId = activeConversation.serverId;
+  const sessionKey = activeConversation.sessionKey;
 
   const selectServer = useCallback(
-    async (id: string) => {
-      // Save current chat to history map
-      chatHistoryMap.current.set(prevServerRef.current, chatOutput);
-      // Load target server's chat from memory or localStorage
-      let history = chatHistoryMap.current.get(id);
-      if (!history || history.length === 0) {
-        try {
-          const raw = localStorage.getItem(`echobird:chat:${agentChatKey(id)}`);
-          if (raw) {
-            const stored = JSON.parse(raw) as DiskMsg[];
-            if (Array.isArray(stored) && stored.length > 0) {
-              history = stored.map((m) => fromDisk(m));
-              chatHistoryMap.current.set(id, history);
-            } else {
-              history = [];
-            }
-          } else {
-            history = [];
-          }
-        } catch {
-          history = [];
-        }
-      }
-      setChatOutput(history);
-      prevServerRef.current = id;
-      setSelectedServerId(id);
+    (id: string) => {
+      if (resettingRef.current || runningRef.current || isProcessing || id === selectedServerId)
+        return;
+      selectStoredServer(id);
+      setChatInput('');
     },
-    [chatOutput, fromDisk]
+    [isProcessing, selectedServerId, selectStoredServer]
+  );
+  const createConversation = useCallback(() => {
+    if (resettingRef.current || runningRef.current || isProcessing) return;
+    createStoredConversation(selectedServerId);
+  }, [isProcessing, selectedServerId, createStoredConversation]);
+  const selectConversation = useCallback(
+    (id: string) => {
+      if (resettingRef.current || runningRef.current || isProcessing || id === activeConversationId)
+        return;
+      selectStoredConversation(id);
+    },
+    [isProcessing, activeConversationId, selectStoredConversation]
+  );
+  const removeSSHServer = useCallback(
+    async (id: string) => {
+      if (resettingRef.current || runningRef.current || isProcessing) return;
+      setSSHServers((prev) => prev.filter((s) => s.id !== id));
+      if (selectedServerId === id) selectStoredServer('local');
+      await api.removeSSHServerFromDisk(id).catch(() => {});
+      useNavigationStore.getState().bumpSshServersVersion();
+    },
+    [isProcessing, selectedServerId, selectStoredServer]
   );
 
   // Load models from config — refresh on mount and on window focus
@@ -326,7 +353,10 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
     let cancelled = false;
     api
       .listenParasiteEvents((event: ParasiteEvent) => {
-        if (cancelled) return;
+        const run = runningRef.current;
+        if (cancelled || !run || run.engine !== 'claudecode') return;
+        if (event.conversation_id !== run.conversationId) return;
+        if (event.request_id !== run.requestId) return;
         switch (event.type) {
           case 'text_delta':
             setChatOutput((prev) => {
@@ -338,18 +368,9 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
             });
             break;
           case 'done':
-            if (abortTimeoutRef.current) {
-              clearTimeout(abortTimeoutRef.current);
-              abortTimeoutRef.current = null;
-            }
-            setIsProcessing(false);
-            setAgentState('idle');
+            finishRun();
             break;
           case 'error': {
-            if (abortTimeoutRef.current) {
-              clearTimeout(abortTimeoutRef.current);
-              abortTimeoutRef.current = null;
-            }
             const key = errorToKey(event.message);
             if (key !== 'error.userCancelled') {
               const errBubble = key
@@ -364,8 +385,7 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
                 return [...prev, { type: 'cancelled', text: '', i18nKey: 'error.userCancelled' }];
               });
             }
-            setIsProcessing(false);
-            setAgentState('idle');
+            finishRun();
             break;
           }
           case 'state':
@@ -381,7 +401,7 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [setChatOutput, finishRun]);
 
   // Subscribe to agent events
   useEffect(() => {
@@ -389,7 +409,10 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
     let cancelled = false;
     api
       .listenAgentEvents((event: AgentEvent) => {
-        if (cancelled) return;
+        const run = runningRef.current;
+        if (cancelled || !run || run.engine !== 'mother') return;
+        if (event.conversation_id !== run.conversationId) return;
+        if (event.request_id !== run.requestId) return;
         switch (event.type) {
           case 'text_delta':
             setChatOutput((prev) => {
@@ -434,18 +457,9 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
             );
             break;
           case 'done':
-            if (abortTimeoutRef.current) {
-              clearTimeout(abortTimeoutRef.current);
-              abortTimeoutRef.current = null;
-            }
-            setIsProcessing(false);
-            setAgentState('idle');
+            finishRun();
             break;
           case 'error': {
-            if (abortTimeoutRef.current) {
-              clearTimeout(abortTimeoutRef.current);
-              abortTimeoutRef.current = null;
-            }
             const key = errorToKey(event.message);
             // Skip duplicate cancelled message — already added immediately in abortAgent()
             if (key !== 'error.userCancelled') {
@@ -458,8 +472,7 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
                 : { type: 'error' as const, text: String(event.message ?? '').slice(0, 500) };
               setChatOutput((prev) => [...prev, errBubble]);
             }
-            setIsProcessing(false);
-            setAgentState('idle');
+            finishRun();
             break;
           }
           case 'state':
@@ -479,12 +492,22 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
       unlisten?.();
     };
     // Subscribe-once on mount — the Tauri listener is torn down on unmount.
-  }, []);
+  }, [setChatOutput, finishRun]);
 
   // Internal send function
   const handleChatSendInternal = useCallback(
     async (message: string, displayText?: string, chips?: BubbleChip[]) => {
-      if (isProcessing || !message.trim()) return;
+      if (resettingRef.current || runningRef.current || isProcessing || !message.trim()) return;
+      // Snapshot for this user message. Changes during the run apply on the next send.
+      const run = {
+        sessionKey,
+        engine: parasiteAgent || 'mother',
+        conversationId:
+          parasiteAgent && activeConversation.id.startsWith('legacy-') ? undefined : sessionKey,
+        requestId: crypto.randomUUID(),
+        reasoningEffort,
+      };
+      runningRef.current = run;
       setIsProcessing(true);
       // Use display text + chips if provided (chip-send path), else full message text
       setChatOutput((prev) => [
@@ -501,16 +524,19 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
         try {
           await api.parasiteSendMessage({
             agentId: parasiteAgent,
+            conversationId: run.conversationId,
+            requestId: run.requestId,
             message: message.trim(),
           });
         } catch (e) {
+          if (runningRef.current !== run) return;
           const key = errorToKey(String(e));
           const type: 'cancelled' | 'error' = key === 'error.userCancelled' ? 'cancelled' : 'error';
           const bubble: ChatMessage = key
             ? { type, text: '', i18nKey: key }
             : { type, text: String(e ?? '').slice(0, 500) };
           setChatOutput((prev) => [...prev, bubble]);
-          setIsProcessing(false);
+          finishRun();
         }
         return;
       }
@@ -521,7 +547,7 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
           ...prev,
           { type: 'error', text: '', i18nKey: 'error.noModelSelected' },
         ]);
-        setIsProcessing(false);
+        finishRun();
         return;
       }
 
@@ -531,7 +557,7 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
         // endpoint for providers such as Grok. Anthropic is used only when the
         // model has no OpenAI-compatible baseUrl.
         //
-        // The backend runs one protocol per session and never switches
+        // The backend snapshots one protocol per request and never switches
         // mid-flight (auto-downgrade was removed in v5.2.0). So fabricating an
         // Anthropic URL from a "/v1" base — as we used to — routes every
         // OpenAI-only provider (OpenRouter, OpenAI, Grok, Groq, Together, …)
@@ -541,6 +567,8 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
         const anthropicUrl = protocol.anthropicUrl;
         await api.sendAgentMessage({
           message: message.trim(),
+          conversation_id: sessionKey,
+          request_id: run.requestId,
           model_id: modelData.internalId,
           base_url: modelData.baseUrl || '',
           api_key: modelData.apiKey,
@@ -550,8 +578,10 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
           server_ids: selectedServerId === 'local' ? [] : [selectedServerId],
           skills: [],
           locale: locale || undefined,
+          ...(run.reasoningEffort ? { reasoning_effort: run.reasoningEffort } : {}),
         });
       } catch (e) {
+        if (runningRef.current !== run) return;
         const key = errorToKey(String(e));
         const type: 'cancelled' | 'error' = key === 'error.userCancelled' ? 'cancelled' : 'error';
         // Same v4.7.0+ pass-through as the streaming-error case: when
@@ -560,19 +590,78 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
           ? { type, text: '', i18nKey: key }
           : { type, text: String(e ?? '').slice(0, 500) };
         setChatOutput((prev) => [...prev, bubble]);
-        setIsProcessing(false);
+        finishRun();
       }
     },
-    [agentModel, models, isProcessing, selectedServerId, locale, parasiteAgent]
+    [
+      agentModel,
+      models,
+      isProcessing,
+      selectedServerId,
+      sessionKey,
+      activeConversation.id,
+      locale,
+      parasiteAgent,
+      setChatOutput,
+      finishRun,
+      reasoningEffort,
+    ]
   );
 
   // Chat send (from input)
   const handleChatSend = useCallback(async () => {
-    if (!chatInput.trim()) return;
+    if (resettingRef.current || runningRef.current || isProcessing || !chatInput.trim()) return;
     const msg = chatInput.trim();
     setChatInput('');
     handleChatSendInternal(msg);
-  }, [chatInput, handleChatSendInternal]);
+  }, [chatInput, isProcessing, handleChatSendInternal]);
+
+  const deleteConversation = useCallback(
+    async (id: string) => {
+      if (resettingRef.current || runningRef.current || isProcessing) return;
+      const conversation = conversations.find((c) => c.id === id);
+      if (!conversation) return;
+      resettingRef.current = true;
+      setIsResetting(true);
+      try {
+        const ok = await confirm({
+          title: t('mother.deleteConversationTitle'),
+          message: t('mother.deleteConversationConfirm').replace(
+            '{title}',
+            conversation.title || t('mother.newConversation')
+          ),
+          confirmText: t('btn.delete'),
+          cancelText: t('btn.cancel'),
+          type: 'danger',
+        });
+        if (!ok) return;
+        await deleteStoredConversation(id, async () => {
+          const legacy = conversation.id.startsWith('legacy-');
+          await api.resetConversationContext(
+            conversation.sessionKey,
+            !legacy || conversation.serverId === 'local',
+            legacy ? undefined : conversation.sessionKey
+          );
+        });
+        if (id === activeConversationId) setChatInput('');
+      } catch (e) {
+        const key = errorToKey(String(e));
+        showToast('error', key ? t(key) : String(e ?? '').slice(0, 500));
+      } finally {
+        resettingRef.current = false;
+        setIsResetting(false);
+      }
+    },
+    [
+      isProcessing,
+      conversations,
+      activeConversationId,
+      confirm,
+      t,
+      showToast,
+      deleteStoredConversation,
+    ]
+  );
 
   return (
     <MotherAgentContext.Provider
@@ -583,8 +672,17 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
         chatInput,
         setChatInput,
         chatOutput,
-        isProcessing,
+        conversations: persistence.conversations,
+        activeConversationId: persistence.activeConversationId,
+        createConversation,
+        selectConversation,
+        deleteConversation,
+        isProcessing: isProcessing || isResetting,
+        isResetting,
         agentModelData,
+        reasoningLevels,
+        reasoningEffort,
+        setReasoningEffort,
         agentState,
         chatInputFocused,
         setChatInputFocused,
@@ -603,13 +701,9 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
         parasiteAgent,
         setParasiteAgent,
         parasiteAvailable,
-        clearChat: () => {
-          setChatOutput([]);
-          persistence.clearHistory();
-          api.resetAgent(selectedServerId).catch(() => {});
-          if (parasiteAgent) api.parasiteReset(parasiteAgent).catch(() => {});
-        },
         abortAgent: () => {
+          const run = runningRef.current;
+          if (!run) return;
           // Idempotent on rapid multi-clicks: backend `agent_abort` is
           // safe to invoke repeatedly (a no-op once `sess.running` is
           // false), but each frontend click used to stack another
@@ -624,10 +718,10 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
             // moment, no need to spam more requests or bubbles.
             return;
           }
-          if (parasiteAgent) {
-            api.parasiteAbort(parasiteAgent).catch(() => {});
+          if (run.engine !== 'mother') {
+            api.parasiteAbort(run.engine, run.conversationId).catch(() => {});
           } else {
-            api.abortAgent(selectedServerId).catch(() => {});
+            api.abortAgent(run.sessionKey).catch(() => {});
           }
           setChatOutput((o) => {
             const last = o[o.length - 1];
@@ -638,20 +732,11 @@ export function MotherAgentProvider({ children }: { children: React.ReactNode })
           });
           // Frontend safety net: force reset after 3s if backend doesn't respond
           abortTimeoutRef.current = setTimeout(() => {
-            abortTimeoutRef.current = null;
-            setIsProcessing((prev) => {
-              if (prev) {
-                setAgentState('idle');
-              }
-              return false;
-            });
+            finishRun();
           }, 3000);
         },
-        maDiskTotal: persistence.diskTotal,
-        loadOlderChat: async () => {
-          const count = await persistence.loadOlderChat();
-          return count > 0 ? chatOutput.slice(0, count) : [];
-        },
+        maDiskTotal: chatOutput.length,
+        loadOlderChat: async () => [],
       }}
     >
       {children}

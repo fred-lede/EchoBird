@@ -1,0 +1,27 @@
+.model-id-combobox-menu {
+  --model-menu-offset: -4px;
+  --model-menu-shift: min(0px, calc(100vw - var(--model-menu-left) - 8px - 100%));
+  transform: translateX(var(--model-menu-shift));
+  animation: model-id-menu-enter 170ms ease-out;
+}
+
+.model-id-combobox-menu.is-drop-up {
+  --model-menu-offset: 4px;
+}
+
+@keyframes model-id-menu-enter {
+  from {
+    opacity: 0;
+    transform: translate(var(--model-menu-shift), var(--model-menu-offset)) scaleY(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(var(--model-menu-shift)) scaleY(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-id-combobox-menu {
+    animation: none;
+  }
+}

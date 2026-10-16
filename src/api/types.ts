@@ -33,12 +33,36 @@ export interface LocalTool extends DetectedTool {
 
 // ─── Model Types ───
 
+export type AccountProvider =
+  | 'claudeCode'
+  | 'codex'
+  | 'workBuddy'
+  | 'workBuddyAi'
+  | 'antigravity'
+  | 'kiro'
+  | 'copilot'
+  | 'kilo'
+  | 'trae'
+  | 'traecn'
+  | 'minimax'
+  | 'qoder'
+  | 'qoderCn'
+  | 'grok'
+  | 'cline'
+  | 'zcode';
+
+export interface AccountSource {
+  provider: AccountProvider;
+  accountId: string;
+}
+
 export interface ModelConfig {
   internalId: string;
   name: string;
   modelId?: string;
   baseUrl: string;
   apiKey: string;
+  accountSource?: AccountSource;
   anthropicUrl?: string;
   modelType?: 'CLOUD' | 'LOCAL' | 'TUNNEL' | 'DEMO';
   openaiTested?: boolean;
@@ -218,8 +242,12 @@ export interface StoreModel {
 
 // ─── Agent Types ───
 
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export interface AgentRequest {
   message: string;
+  conversation_id?: string;
+  request_id?: string;
   model_id: string;
   base_url: string; // OpenAI-compatible URL (also used as final OpenAI fallback)
   api_key: string;
@@ -232,9 +260,10 @@ export interface AgentRequest {
   skills: string[];
   /** UI locale code (e.g. "zh-Hans", "en"). Hints the agent's response language. */
   locale?: string;
+  reasoning_effort?: ReasoningEffort;
 }
 
-export type AgentEvent =
+export type AgentEvent = { conversation_id?: string; request_id?: string } & (
   | { type: 'text_delta'; text: string }
   | { type: 'thinking'; text: string }
   | { type: 'tool_call_start'; id: string; name: string }
@@ -242,7 +271,8 @@ export type AgentEvent =
   | { type: 'tool_result'; id: string; output: string; success: boolean }
   | { type: 'done' }
   | { type: 'error'; message: string }
-  | { type: 'state'; state: string };
+  | { type: 'state'; state: string }
+);
 
 // ─── Parasite Types ───
 // Mother Agent's "Connect" mode delegates a turn to the installed Claude
@@ -251,11 +281,14 @@ export type AgentEvent =
 
 export interface ParasiteSendRequest {
   agentId: string;
+  conversationId?: string;
+  requestId?: string;
   message: string;
 }
 
-export type ParasiteEvent =
+export type ParasiteEvent = { conversation_id?: string; request_id?: string } & (
   | { type: 'text_delta'; text: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
-  | { type: 'state'; state: string };
+  | { type: 'state'; state: string }
+);

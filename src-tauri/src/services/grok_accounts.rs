@@ -5,12 +5,14 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
+
+pub(crate) mod proxy;
+mod storage;
 
 static PENDING: OnceLock<Mutex<Option<Pending>>> = OnceLock::new();
 static ACCOUNT_LOCK: Mutex<()> = Mutex::new(());
-static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const LOGIN_TIMEOUT: i64 = 60;
 const SETTINGS_URL: &str = "https://cli-chat-proxy.grok.com/v1/settings";
 const TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
@@ -27,7 +29,10 @@ pub struct Account {
 struct Saved {
     summary: Account,
     key: String,
+    #[serde(with = "storage::credential")]
     auth: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_pair: Option<String>,
 }
 struct Pending {
     id: String,
@@ -49,26 +54,19 @@ fn home() -> Result<PathBuf, String> {
     dirs::home_dir().ok_or("accountError.home".into())
 }
 fn auth_path() -> Result<PathBuf, String> {
-    Ok(home()?.join(".grok/auth.json"))
+    if let Some(path) = std::env::var_os("GROK_AUTH_PATH").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(native_home()?.join("auth.json"))
+}
+pub(crate) fn native_home() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("GROK_HOME").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(home()?.join(".grok"))
 }
 fn store() -> Result<PathBuf, String> {
     Ok(home()?.join(".echobird/grok-accounts"))
-}
-fn read_auth() -> Result<Value, String> {
-    serde_json::from_slice(&fs::read(auth_path()?).map_err(|_| "accountError.read")?)
-        .map_err(|_| "accountError.format".into())
-}
-fn apply_native(dir: &Path, saved: &Saved) -> Result<(), String> {
-    // Grok's local session IDs and logs are shared across logins. Only replace auth.
-    let mut auth = serde_json::Map::new();
-    auth.insert(saved.key.clone(), saved.auth.clone());
-    // The old account's subscription cache must not be shown for the new login.
-    match fs::remove_file(dir.join("settings_cache.json")) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err("accountError.write".into()),
-    }
-    super::cursor_auth::write(&dir.join("auth.json"), &Value::Object(auth))
 }
 fn saved_path(id: &str) -> Result<PathBuf, String> {
     if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -97,6 +95,17 @@ fn summary(key: &str, auth: &Value, active: bool) -> Result<Account, String> {
     })
 }
 fn save(key: &str, auth: &Value) -> Result<Account, String> {
+    let row = &auth[key];
+    if row["oidc_issuer"] != "https://auth.x.ai"
+        || row["user_id"]
+            .as_str()
+            .map_or(true, |id| id.trim().is_empty())
+        || row["key"]
+            .as_str()
+            .map_or(true, |token| token.trim().is_empty())
+    {
+        return Err("accountError.invalidAccount".into());
+    }
     let _guard = ACCOUNT_LOCK.lock().map_err(|_| "accountError.busy")?;
     save_at(&store()?, key, auth)
 }
@@ -121,33 +130,12 @@ fn save_at(dir: &std::path::Path, key: &str, auth: &Value) -> Result<Account, St
         summary: a.clone(),
         key: key.into(),
         auth: auth[key].clone(),
+        native_pair: None,
     };
+    super::native_account_files::private_dir(dir)?;
     super::cursor_auth::write(&path, &saved)?;
+    proxy::forget_pending(&path);
     Ok(a)
-}
-fn sync_native(saved: &mut Saved, current: &Value) -> Result<bool, String> {
-    if current.get(&saved.key).is_none() {
-        return Ok(false);
-    }
-    let snapshot = serde_json::json!({saved.key.clone(): saved.auth});
-    let active =
-        summary(&saved.key, current, false)?.id == summary(&saved.key, &snapshot, false)?.id;
-    let timestamp = |auth: &Value, field: &str| {
-        auth[field]
-            .as_str()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-    };
-    // A stale native file must not roll back a refresh token rotated by EchoBird.
-    let native_is_older = timestamp(&saved.auth, "create_time")
-        .zip(timestamp(&current[&saved.key], "create_time"))
-        .or_else(|| {
-            timestamp(&saved.auth, "expires_at").zip(timestamp(&current[&saved.key], "expires_at"))
-        })
-        .is_some_and(|(saved_time, native_time)| saved_time > native_time);
-    if active && !native_is_older {
-        saved.auth = current[&saved.key].clone();
-    }
-    Ok(active)
 }
 
 #[cfg(test)]
@@ -165,7 +153,7 @@ pub async fn start_login() -> Result<(String, i64), String> {
     let id = uuid::Uuid::new_v4().to_string();
     let expires = chrono::Utc::now().timestamp() + LOGIN_TIMEOUT;
     let dir = home()?.join(".echobird/grok-logins").join(&id);
-    fs::create_dir_all(&dir).map_err(|_| "accountError.write")?;
+    super::native_account_files::private_dir(&dir)?;
     let mut pending = Pending {
         id: id.clone(),
         dir,
@@ -176,7 +164,8 @@ pub async fn start_login() -> Result<(String, i64), String> {
     let mut command = crate::utils::process::command(exe);
     command
         .args(["login", "--oauth"])
-        .env("GROK_HOME", &pending.dir);
+        .env("GROK_HOME", &pending.dir)
+        .env_remove("GROK_AUTH_PATH");
 
     pending.child = Some(command.spawn().map_err(|_| "accountError.auth")?);
     *guard = Some(pending);
@@ -223,57 +212,79 @@ pub fn cancel_login(id: &str) -> Result<(), String> {
 }
 pub fn list() -> Result<Vec<Account>, String> {
     let _guard = ACCOUNT_LOCK.lock().map_err(|_| "accountError.busy")?;
-    list_at(&store()?, &auth_path()?)
+    list_at(&store()?, Path::new(""))
 }
-fn list_at(dir: &Path, native_path: &Path) -> Result<Vec<Account>, String> {
+pub(crate) fn list_saved_accounts() -> Result<Vec<Account>, String> {
+    list()
+}
+fn list_at(dir: &Path, _native_path: &Path) -> Result<Vec<Account>, String> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    let current: Value =
-        super::cursor_auth::read(native_path).unwrap_or_else(|_| serde_json::json!({}));
+    #[derive(Deserialize)]
+    struct Metadata {
+        summary: Account,
+    }
     for e in fs::read_dir(dir).map_err(|_| "accountError.read")? {
         let p = e.map_err(|_| "accountError.read")?.path();
         if p.extension().and_then(|x| x.to_str()) != Some("json") {
             continue;
         }
-        let mut saved: Saved =
+        let saved: Metadata =
             serde_json::from_slice(&fs::read(&p).map_err(|_| "accountError.read")?)
                 .map_err(|_| "accountError.format")?;
-        let active = sync_native(&mut saved, &current)?;
-        if active {
-            super::cursor_auth::write(&p, &saved)?;
-        }
-        let mut a = saved.summary;
-        a.active = active;
-        out.push(a)
+        out.push(saved.summary)
     }
     out.sort_by(|a, b| a.email.cmp(&b.email));
     Ok(out)
 }
 pub async fn switch(id: &str) -> Result<Account, String> {
+    let path = saved_path(id)?;
+    let _action = proxy::account_lock(&path)?.lock_owned().await;
+    let native = auth_path()?;
+    let _native_lock = storage::NativeLock::acquire(&native, true).await?;
+    _native_lock
+        .as_ref()
+        .ok_or("accountError.busy")?
+        .ensure_current()?;
     let _guard = ACCOUNT_LOCK.lock().map_err(|_| "accountError.busy")?;
-    let p = saved_path(id)?;
-    let mut saved: Saved = serde_json::from_slice(&fs::read(&p).map_err(|_| "accountError.read")?)
-        .map_err(|_| "accountError.format")?;
-    if let Ok(current) = read_auth() {
-        if sync_native(&mut saved, &current)? {
-            super::cursor_auth::write(&p, &saved)?;
-        }
-    }
-    apply_native(&home()?.join(".grok"), &saved)?;
-    let mut a = saved.summary;
-    a.active = true;
-    Ok(a)
+    let saved = proxy::current(&path)?;
+    proxy::valid(&saved, id)?;
+    storage::apply_at(
+        &store()?,
+        &native,
+        &native_home()?.join("settings_cache.json"),
+        &saved,
+    )
 }
 pub async fn delete(id: &str) -> Result<(), String> {
+    let path = saved_path(id)?;
+    let _action = proxy::account_lock(&path)?.lock_owned().await;
     let _guard = ACCOUNT_LOCK.lock().map_err(|_| "accountError.busy")?;
-    fs::remove_file(saved_path(id)?).map_err(|_| "accountError.write".into())
+    fs::remove_file(&path).map_err(|_| "accountError.write")?;
+    proxy::forget_pending(&path);
+    drop(_guard);
+    super::smart_router::forget_account_authentication(
+        crate::models::model::AccountProvider::Grok,
+        id,
+    );
+    Ok(())
 }
 
 pub async fn refresh(id: &str) -> Result<Account, String> {
-    let _refresh_guard = REFRESH_LOCK.lock().await;
-    refresh_at(&saved_path(id)?, &auth_path()?, SETTINGS_URL, TOKEN_URL).await
+    let id = id.to_owned();
+    proxy::complete(async move {
+        let native = super::tool_manager::get_tool_exe_path("grok").and_then(|_| auth_path().ok());
+        refresh_with_native(
+            &saved_path(&id)?,
+            native.as_deref(),
+            SETTINGS_URL,
+            TOKEN_URL,
+        )
+        .await
+    })
+    .await
 }
 
 async fn request_settings(
@@ -368,51 +379,31 @@ async fn renew_auth(client: &reqwest::Client, url: &str, auth: &Value) -> Result
     Ok(renewed)
 }
 
+#[cfg(test)]
 async fn refresh_at(
     path: &Path,
     native_path: &Path,
     settings_url: &str,
     token_url: &str,
 ) -> Result<Account, String> {
-    let mut saved: Saved = {
-        let _guard = ACCOUNT_LOCK.lock().map_err(|_| "accountError.busy")?;
-        let mut saved: Saved = super::cursor_auth::read(path)?;
-        if let Ok(current) = super::cursor_auth::read(native_path) {
-            if sync_native(&mut saved, &current)? {
-                super::cursor_auth::write(path, &saved)?;
-            }
-        }
-        saved
-    };
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| "accountError.network")?;
-    let mut response = request_settings(&client, settings_url, &saved.auth).await?;
+    refresh_with_native(path, Some(native_path), settings_url, token_url).await
+}
+async fn refresh_with_native(
+    path: &Path,
+    native_path: Option<&Path>,
+    settings_url: &str,
+    token_url: &str,
+) -> Result<Account, String> {
+    let mut session = proxy::Session::open(path, native_path).await?;
+    let client = proxy::client()?;
+    let mut response = request_settings(&client, settings_url, &session.saved.auth).await?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        let renewed = renew_auth(&client, token_url, &saved.auth).await?;
-        {
-            let _guard = ACCOUNT_LOCK.lock().map_err(|_| "accountError.busy")?;
-            let latest: Saved = super::cursor_auth::read(path)?;
-            if latest.auth != saved.auth {
-                return Err("accountError.cancelled".into());
-            }
-            let old_token = saved.auth["key"].clone();
-            saved.auth = renewed;
-            // Persist rotation before querying settings, even if that query later fails.
-            super::cursor_auth::write(path, &saved)?;
-            if let Ok(mut current) = super::cursor_auth::read::<Value>(native_path) {
-                let mut original = saved.clone();
-                original.auth = latest.auth;
-                if sync_native(&mut original, &current)? && current[&saved.key]["key"] == old_token
-                {
-                    current[&saved.key] = saved.auth.clone();
-                    super::cursor_auth::write(native_path, &current)?;
-                }
-            }
-        }
-        response = request_settings(&client, settings_url, &saved.auth).await?;
+        let rejected = session.saved.auth["key"]
+            .as_str()
+            .ok_or("accountError.auth")?
+            .to_owned();
+        session.renew(Some(&rejected), token_url).await?;
+        response = request_settings(&client, settings_url, &session.saved.auth).await?;
     }
     if matches!(response.status().as_u16(), 401 | 403) {
         return Err("accountError.auth".into());
@@ -424,21 +415,18 @@ async fn refresh_at(
     let plan = settings["subscription_tier_display"]
         .as_str()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|plan| !plan.is_empty())
         .ok_or("accountError.format")?;
-    let _guard = ACCOUNT_LOCK.lock().map_err(|_| "accountError.busy")?;
-    let mut latest: Saved = super::cursor_auth::read(path)?;
+    let _store = ACCOUNT_LOCK.lock().map_err(|_| "accountError.busy")?;
+    let mut latest = proxy::current(path)?;
+    if latest.auth != session.saved.auth {
+        return Err("accountError.cancelled".into());
+    }
     latest.summary.plan = Some(plan.into());
     super::cursor_auth::write(path, &latest)?;
-    let active = super::cursor_auth::read::<Value>(native_path)
-        .ok()
-        .map(|current| sync_native(&mut latest, &current))
-        .transpose()?
-        .unwrap_or(false);
-    latest.summary.active = active;
+    proxy::forget_pending(path);
     Ok(latest.summary)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,19 +435,19 @@ mod tests {
     #[test]
     fn switching_accounts_keeps_original_local_sessions_and_missing_history() {
         let dir = std::env::temp_dir().join(format!("grok-history-{}", uuid::Uuid::new_v4()));
+        let store = dir.join("accounts");
+        let native = dir.join("auth.json");
         fs::create_dir_all(&dir).unwrap();
         let login = |user: &str| {
             let key = "https://auth.x.ai";
-            let auth = json!({"user_id":user,"email":format!("{user}@example.test"),"access_token":format!("token-{user}")});
-            Saved {
-                summary: summary(key, &json!({key:auth}), true).unwrap(),
-                key: key.into(),
-                auth,
-            }
+            let auth = json!({key:{"user_id":user,"email":format!("{user}@example.test"),"key":format!("token-{user}"),"oidc_issuer":key}});
+            let account = save_at(&store, key, &auth).unwrap();
+            super::super::cursor_auth::read::<Saved>(&store.join(format!("{}.json", account.id)))
+                .unwrap()
         };
         let a = login("a");
         let b = login("b");
-        apply_native(&dir, &a).unwrap();
+        storage::apply_at(&store, &native, &dir.join("settings_cache.json"), &a).unwrap();
         assert!(!dir.join("sessions").exists());
         let mut originals = Vec::new();
         for id in ["a-session", "b-session"] {
@@ -482,7 +470,7 @@ mod tests {
         }
         for saved in [&b, &b, &a] {
             fs::write(dir.join("settings_cache.json"), "old-plan").unwrap();
-            apply_native(&dir, saved).unwrap();
+            storage::apply_at(&store, &native, &dir.join("settings_cache.json"), saved).unwrap();
             let auth: Value =
                 serde_json::from_slice(&fs::read(dir.join("auth.json")).unwrap()).unwrap();
             assert_eq!(
@@ -496,7 +484,9 @@ mod tests {
         }
         // A reported write failure must leave both accounts' original history intact.
         fs::create_dir(dir.join("settings_cache.json")).unwrap();
-        assert!(apply_native(&dir, &b).is_err());
+        let native_before = fs::read(&native).unwrap();
+        assert!(storage::apply_at(&store, &native, &dir.join("settings_cache.json"), &b).is_err());
+        assert_eq!(fs::read(&native).unwrap(), native_before);
         for (path, bytes) in &originals {
             assert_eq!(&fs::read(path).unwrap(), bytes);
         }
@@ -549,24 +539,5 @@ mod tests {
             "existing native login"
         );
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn token_rotation_keeps_current_identity_without_overwriting_other_accounts() {
-        let issuer = "https://auth.example.test";
-        let original = json!({issuer:{"user_id":"a", "email":"a@example.test", "key":"old"}});
-        let mut saved = Saved {
-            summary: summary(issuer, &original, false).unwrap(),
-            key: issuer.into(),
-            auth: original[issuer].clone(),
-        };
-        let mut rotated = original.clone();
-        rotated[issuer]["key"] = json!("new");
-        assert!(sync_native(&mut saved, &rotated).unwrap());
-        assert_eq!(saved.auth["key"], "new");
-        rotated[issuer]["user_id"] = json!("b");
-        rotated[issuer]["key"] = json!("other-user");
-        assert!(!sync_native(&mut saved, &rotated).unwrap());
-        assert_eq!(saved.auth["key"], "new");
     }
 }

@@ -26,6 +26,34 @@ impl ModelScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountProvider {
+    ClaudeCode,
+    Codex,
+    WorkBuddy,
+    WorkBuddyAi,
+    Antigravity,
+    Copilot,
+    Kilo,
+    Trae,
+    Traecn,
+    Minimax,
+    Qoder,
+    QoderCn,
+    Grok,
+    Cline,
+    Kiro,
+    Zcode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSource {
+    pub provider: AccountProvider,
+    pub account_id: String,
+}
+
 /// Model configuration (stored in ~/.echobird/models.json)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +65,8 @@ pub struct ModelConfig {
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_source: Option<AccountSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +99,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(model.scope, ModelScope::ModelCenter);
+        assert!(model.account_source.is_none());
     }
 
     #[test]
@@ -79,6 +110,7 @@ mod tests {
             model_id: Some("model-id".to_string()),
             base_url: "https://example.com/v1".to_string(),
             api_key: "key".to_string(),
+            account_source: None,
             anthropic_url: None,
             model_type: Some(ModelType::Cloud),
             openai_tested: None,
@@ -90,6 +122,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(value["scope"], "smartRouter");
+    }
+
+    #[test]
+    fn account_binding_round_trips_without_api_credentials() {
+        let model: ModelConfig = serde_json::from_value(serde_json::json!({
+            "internalId":"account-model", "name":"Codex", "modelId":"fixture-model",
+            "baseUrl":"account://echobird", "scope":"smartRouter",
+            "accountSource":{"provider":"codex","accountId":"saved-id"}
+        }))
+        .unwrap();
+        assert!(model.api_key.is_empty());
+        assert_eq!(
+            model.account_source.as_ref().unwrap().provider,
+            AccountProvider::Codex
+        );
+        let value = serde_json::to_value(model).unwrap();
+        assert_eq!(value["accountSource"]["accountId"], "saved-id");
+        assert!(value["accountSource"].get("accessToken").is_none());
     }
 }
 

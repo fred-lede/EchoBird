@@ -76,6 +76,85 @@ afterEach(() => {
 });
 
 describe('shared account request boundaries', () => {
+  it('marks each navigation pending before its deferred list starts and retains rows after failure', async () => {
+    act(() => {
+      renderer = create(<Harness />);
+    });
+    expect(state.loading).toBe(true);
+    expect(state.loaded).toBe(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(state.loading).toBe(false);
+    expect(state.loaded).toBe(true);
+    expect(state.readFailed).toBe(false);
+
+    act(() => useNavigationStore.getState().setActivePage('accounts'));
+    expect(state.loading).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(state.loading).toBe(false);
+    act(() => useNavigationStore.getState().setActivePage('models'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    vi.mocked(client.list).mockRejectedValueOnce(new Error('unreadable local accounts'));
+    act(() => useNavigationStore.getState().setActivePage('accounts'));
+    expect(state.loading).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(state.loading).toBe(false);
+    expect(state.loaded).toBe(true);
+    expect(state.readFailed).toBe(true);
+    expect(state.accounts).toEqual([account]);
+    expect(client.refresh).not.toHaveBeenCalled();
+    expect(client.start).not.toHaveBeenCalled();
+    expect(clearModel).not.toHaveBeenCalled();
+    expect(showError).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes a failed first read from a successful empty list', async () => {
+    vi.mocked(client.list).mockRejectedValueOnce(new Error('unreadable local accounts'));
+    await mount();
+    expect(state.loading).toBe(false);
+    expect(state.loaded).toBe(false);
+    expect(state.readFailed).toBe(true);
+    vi.mocked(client.list).mockResolvedValueOnce([]);
+    await act(async () => {
+      await state.reload();
+    });
+    expect(state.loaded).toBe(true);
+    expect(state.readFailed).toBe(false);
+    expect(state.accounts).toEqual([]);
+  });
+
+  it('does not mark a newly added account as a complete list after failed local reads', async () => {
+    vi.mocked(client.list).mockRejectedValue(new Error('unreadable local accounts'));
+    const added = { id: 'new-account' };
+    vi.mocked(client.poll!).mockResolvedValue(added);
+    await mount();
+    await act(async () => {
+      await state.add();
+    });
+    expect(state.accounts).toEqual([added]);
+    expect(state.loaded).toBe(false);
+    expect(state.readFailed).toBe(true);
+    expect(state.mutationRevision).toBe(1);
+    await act(async () => {
+      await state.remove(added);
+    });
+    expect(state.accounts).toEqual([]);
+    expect(state.loaded).toBe(false);
+    expect(state.mutationRevision).toBe(2);
+    vi.mocked(client.list).mockResolvedValueOnce([]);
+    await act(async () => {
+      await state.reload();
+    });
+    expect(state.loaded).toBe(true);
+  });
+
   it('cancels immediately, preserves saved accounts and isolates a restarted login from old results and deadlines', async () => {
     const first = deferred<Account | null>();
     const second = deferred<Account | null>();
@@ -228,7 +307,7 @@ describe('shared account request boundaries', () => {
     expect([...state.authorizationFailedIds]).toEqual(['saved']);
     const retry = deferred<Account>();
     vi.mocked(client.refresh).mockReturnValueOnce(retry.promise);
-    let task!: Promise<void>;
+    let task!: Promise<unknown>;
     act(() => {
       task = state.refresh(account);
     });
@@ -262,7 +341,7 @@ describe('shared account request boundaries', () => {
         if (failure) throw new Error('accountError.loginRequired');
         return { ...account, quota: 1 };
       });
-      let task!: Promise<void>;
+      let task!: Promise<unknown>;
       act(() => {
         task = state.refresh(account);
       });
@@ -282,7 +361,7 @@ describe('shared account request boundaries', () => {
       expect(state.refreshing.size).toBe(0);
       await act(async () => {
         late.resolve();
-        await task;
+        expect(await task).toBeUndefined();
       });
       expect(state.authorizationFailedIds.size).toBe(0);
       expect(showError).toHaveBeenCalledTimes(1);
@@ -297,7 +376,7 @@ describe('shared account request boundaries', () => {
       await late.promise;
       throw new Error('accountError.loginRequired');
     });
-    let task!: Promise<void>;
+    let task!: Promise<unknown>;
     act(() => {
       task = state.refresh(account);
     });
@@ -426,7 +505,7 @@ describe('shared account request boundaries', () => {
     const poll = deferred<Account | null>();
     vi.mocked(client.refresh).mockReturnValue(quota.promise);
     vi.mocked(client.poll!).mockReturnValue(poll.promise);
-    let refreshing!: Promise<void>;
+    let refreshing!: Promise<unknown>;
     let adding!: Promise<void>;
     await act(async () => {
       refreshing = state.refresh(account);

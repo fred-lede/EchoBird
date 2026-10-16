@@ -18,6 +18,7 @@ import {
 } from '../AccountCenter/AccountCenter';
 import { open as folderPicker } from '@tauri-apps/plugin-dialog';
 import { open as shellOpen } from '@tauri-apps/plugin-shell';
+import { TraeAccountSection } from './TraeAccountSection';
 
 vi.hoisted(() => vi.stubGlobal('__APP_EDITION__', 'full'));
 vi.mock('../../hooks/useI18n', () => {
@@ -47,7 +48,28 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 }));
 vi.mock('../../api/tauri', () => {
   const names = [
+    'listClineAccounts',
+    'startClineLogin',
+    'pollClineLogin',
+    'cancelClineLogin',
+    'switchClineAccount',
+    'refreshClineAccount',
+    'deleteClineAccount',
     'listZCodeAccounts',
+    'listKiloAccounts',
+    'startKiloLogin',
+    'pollKiloLogin',
+    'cancelKiloLogin',
+    'switchKiloAccount',
+    'refreshKiloAccount',
+    'deleteKiloAccount',
+    'listCopilotAccounts',
+    'startCopilotLogin',
+    'pollCopilotLogin',
+    'cancelCopilotLogin',
+    'switchCopilotAccount',
+    'refreshCopilotAccount',
+    'deleteCopilotAccount',
     'startZCodeLogin',
     'pollZCodeLogin',
     'cancelZCodeLogin',
@@ -69,6 +91,22 @@ vi.mock('../../api/tauri', () => {
     'completeClaudeCodeLogin',
     'refreshClaudeCodeAccountQuota',
     'listWorkBuddyAccounts',
+    'listKiroAccounts',
+    'startKiroLogin',
+    'pollKiroLogin',
+    'cancelKiroLogin',
+    'switchKiroAccount',
+    'refreshKiroAccountQuota',
+    'deleteKiroAccount',
+    'applyModelToTool',
+    'listTraeAccounts',
+    'startTraeLogin',
+    'pollTraeLogin',
+    'cancelTraeLogin',
+    'switchTraeAccount',
+    'refreshTraeAccountQuota',
+    'claimTraeDailyCredits',
+    'deleteTraeAccount',
     'deleteWorkBuddyAccount',
     'startWorkBuddyLogin',
     'cancelWorkBuddyLogin',
@@ -181,6 +219,8 @@ const listNames = [
   'listClaudeCodeAccounts',
   'listClaudeDesktopAccounts',
   'listWorkBuddyAccounts',
+  'listKiroAccounts',
+  'listTraeAccounts',
   'listDeepSeekAccounts',
   'listGrokAccounts',
   'listManusAccounts',
@@ -197,6 +237,10 @@ const listFor = {
   claudedesktop: 'listClaudeDesktopAccounts',
   workbuddy: 'listWorkBuddyAccounts',
   workbuddyai: 'listWorkBuddyAccounts',
+  trae: 'listTraeAccounts',
+  traecn: 'listTraeAccounts',
+  kirocrew: 'listKiroAccounts',
+  kirocli: 'listKiroAccounts',
   dsh: 'listDeepSeekAccounts',
   grok: 'listGrokAccounts',
   manus: 'listManusAccounts',
@@ -212,13 +256,24 @@ async function tick() {
     await vi.advanceTimersByTimeAsync(1);
   });
 }
-async function mount(tool: Tool, installed = true) {
+async function mount(tool: Tool | api.KiloTool | api.CopilotTool, installed = true) {
   useToolsStore.getState().setDetectedTools([
     {
       id: tool,
       name: tool,
-      category: tool === 'grok' || tool === 'antigravity' ? 'CLI Code' : 'Desktop',
-      noModelConfig: ['antigravity', 'antigravitydesktop', 'cursor'].includes(tool),
+      category: ['grok', 'antigravity', 'kilo', 'copilot', 'kirocli'].includes(tool)
+        ? 'CLI Code'
+        : 'Desktop',
+      noModelConfig: [
+        'antigravity',
+        'antigravitydesktop',
+        'cursor',
+        'cursor',
+        'trae',
+        'traecn',
+        'kirocrew',
+        'kirocli',
+      ].includes(tool),
       installed,
     },
   ]);
@@ -240,6 +295,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   for (const name of listNames) vi.mocked(api[name]).mockResolvedValue([]);
+  vi.mocked(api.listClineAccounts).mockResolvedValue([]);
+  vi.mocked(api.listKiloAccounts).mockResolvedValue([]);
+  vi.mocked(api.listCopilotAccounts).mockResolvedValue([]);
   for (const [name, action] of Object.entries(api))
     if (name.startsWith('cancel') && vi.isMockFunction(action)) action.mockResolvedValue(undefined);
   vi.mocked(api.startCodexLogin).mockResolvedValue('fixture-login');
@@ -274,13 +332,358 @@ async function showAccountCenter(tools: Tool[]) {
 
 function mockAccountOrderStorage(raw?: string) {
   const values = new Map(raw ? [['echobird_account_card_order', raw]] : []);
+  const setItem = vi.fn((key: string, value: string) => void values.set(key, value));
+  const cacheWrites = vi.fn((key: string, value: string) => void values.set(key, value));
   const storage = {
     getItem: vi.fn((key: string) => values.get(key) ?? null),
-    setItem: vi.fn((key: string, value: string) => void values.set(key, value)),
+    setItem: (key: string, value: string) => {
+      if (key === 'echobird_account_card_order') setItem(key, value);
+      else cacheWrites(key, value);
+    },
   };
   vi.stubGlobal('localStorage', storage);
-  return storage;
+  return { getItem: storage.getItem, setItem, cacheWrites };
 }
+
+const kiloFixture: api.KiloAccount = {
+  id: 'kilo-fixture',
+  email: 'kilo@example.test',
+  active: true,
+  plan: null,
+  balance: null,
+};
+const copilotFixture: api.CopilotAccount = {
+  id: 'copilot-fixture',
+  login: 'github-user',
+  host: 'github.com',
+  active: true,
+  plan: null,
+  remaining: null,
+  total: null,
+  resetAt: null,
+};
+const clientCases = [
+  {
+    family: 'kilo',
+    tool: 'kilo',
+    list: 'listKiloAccounts',
+    apply: 'switchKiloAccount',
+    refresh: 'refreshKiloAccount',
+  },
+  {
+    family: 'kilo',
+    tool: 'kilodesktop',
+    list: 'listKiloAccounts',
+    apply: 'switchKiloAccount',
+    refresh: 'refreshKiloAccount',
+  },
+  {
+    family: 'copilot',
+    tool: 'copilot',
+    list: 'listCopilotAccounts',
+    apply: 'switchCopilotAccount',
+    refresh: 'refreshCopilotAccount',
+  },
+  {
+    family: 'copilot',
+    tool: 'copilotdesktop',
+    list: 'listCopilotAccounts',
+    apply: 'switchCopilotAccount',
+    refresh: 'refreshCopilotAccount',
+  },
+] as const;
+const clientGroup = (family: 'kilo' | 'copilot') =>
+  family === 'kilo' ? state.kiloAccounts : state.copilotAccounts;
+
+it.each(['kilo', 'copilot'] as const)(
+  '%s: successful login saves the summary without quota refresh or native apply',
+  async (family) => {
+    const start = family === 'kilo' ? 'startKiloLogin' : 'startCopilotLogin';
+    const poll = family === 'kilo' ? 'pollKiloLogin' : 'pollCopilotLogin';
+    const refresh = family === 'kilo' ? 'refreshKiloAccount' : 'refreshCopilotAccount';
+    const apply = family === 'kilo' ? 'switchKiloAccount' : 'switchCopilotAccount';
+    const row = family === 'kilo' ? kiloFixture : copilotFixture;
+    vi.mocked(api[start]).mockResolvedValue({
+      loginId: 'approved-login',
+      verificationUri: 'https://kilo.ai/login',
+      expiresAt: Date.now() / 1000 + 60,
+    } as never);
+    vi.mocked(api[poll]).mockResolvedValue(row as never);
+    await mount(family);
+    vi.mocked(
+      api[family === 'kilo' ? 'listKiloAccounts' : 'listCopilotAccounts']
+    ).mockResolvedValue([row] as never);
+    await act(async () => {
+      await clientGroup(family).add();
+    });
+    expect(clientGroup(family).accounts).toEqual([row]);
+    expect(api[refresh]).not.toHaveBeenCalled();
+    expect(api[apply]).not.toHaveBeenCalled();
+    expect(api.startTool).not.toHaveBeenCalled();
+    expect(clientGroup(family).busy).toBe(false);
+  }
+);
+
+it.each(['kilo', 'copilot'] as const)(
+  '%s: account rows isolate refresh and nested keyboard actions while preserving selection',
+  async (family) => {
+    const list = family === 'kilo' ? 'listKiloAccounts' : 'listCopilotAccounts';
+    const refreshName = family === 'kilo' ? 'refreshKiloAccount' : 'refreshCopilotAccount';
+    const row = family === 'kilo' ? kiloFixture : copilotFixture;
+    vi.mocked(api[list]).mockResolvedValue([row] as never);
+    await mount(family);
+    await act(async () => {
+      renderer.update(
+        <AppManagerProvider>
+          <Harness panel />
+        </AppManagerProvider>
+      );
+    });
+    const identity = family === 'kilo' ? kiloFixture.email : copilotFixture.login;
+    const radio = renderer.root.findByProps({ role: 'radio' });
+    expect(radio.props.className).toContain('h-12');
+    const preventDefault = vi.fn();
+    act(() =>
+      radio.props.onKeyDown({ key: 'Enter', target: {}, currentTarget: radio, preventDefault })
+    );
+    expect(preventDefault).not.toHaveBeenCalled();
+    act(() =>
+      radio.props.onKeyDown({ key: ' ', target: radio, currentTarget: radio, preventDefault })
+    );
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(clientGroup(family).selectedId).toBe(row.id);
+    let complete!: (value: unknown) => void;
+    vi.mocked(api[refreshName]).mockReturnValue(
+      new Promise((resolve) => {
+        complete = resolve;
+      }) as never
+    );
+    const stopPropagation = vi.fn();
+    await act(async () => {
+      renderer.root
+        .findByProps({ 'aria-label': `agent.refreshAccount ${identity}` })
+        .props.onClick({ stopPropagation });
+    });
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(
+      renderer.root.findByProps({ 'aria-label': `agent.refreshAccount ${identity}` }).props.disabled
+    ).toBe(true);
+    expect(clientGroup(family).selectedId).toBe(row.id);
+    await act(async () => {
+      complete(row);
+    });
+    expect(
+      renderer.root.findByProps({ 'aria-label': `agent.refreshAccount ${identity}` }).props.disabled
+    ).toBe(false);
+    expect(clientGroup(family).selectedId).toBe(row.id);
+    expect(api[refreshName]).toHaveBeenCalledExactlyOnceWith(row.id);
+  }
+);
+
+it.each(clientCases)(
+  '$tool: passive navigation preserves cached rows and never applies or refreshes',
+  async (client) => {
+    const row = client.family === 'kilo' ? kiloFixture : copilotFixture;
+    vi.mocked(api[client.list]).mockResolvedValue([row] as never);
+    await mount(client.tool);
+    expect(api[client.list]).toHaveBeenCalledTimes(1);
+    if (client.family === 'copilot')
+      expect(api.listCopilotAccounts).toHaveBeenCalledWith(client.tool);
+    expect(clientGroup(client.family).accounts).toEqual([row]);
+    for (const [name, action] of Object.entries(api)) {
+      if (/^(start|refresh|switch|delete|claim|restore)/.test(name) && vi.isMockFunction(action))
+        expect(action).not.toHaveBeenCalled();
+    }
+    act(() => useNavigationStore.getState().setActivePage('models'));
+    await tick();
+    vi.mocked(api[client.list]).mockRejectedValueOnce(new Error('accountError.read'));
+    act(() => useNavigationStore.getState().setActivePage('apps'));
+    await tick();
+    expect(clientGroup(client.family).accounts).toEqual([row]);
+    expect(state.applyError).toBeNull();
+    expect(api[client.apply]).not.toHaveBeenCalled();
+    expect(api[client.refresh]).not.toHaveBeenCalled();
+    expect(folderPicker).not.toHaveBeenCalled();
+  }
+);
+
+it('Copilot CLI and Desktop load their own saved selection during passive tool switching', async () => {
+  const cliRow = { ...copilotFixture, id: 'cli-saved', login: 'cli-user' };
+  const desktopRow = { ...copilotFixture, id: 'desktop-saved', login: 'desktop-user' };
+  vi.mocked(api.listCopilotAccounts).mockImplementation(async (toolId) =>
+    toolId === 'copilotdesktop' ? [desktopRow] : [cliRow]
+  );
+  await mount('copilot');
+  act(() =>
+    useToolsStore.getState().setDetectedTools([
+      { id: 'copilot', name: 'Copilot CLI', category: 'CLI Code', installed: true },
+      { id: 'copilotdesktop', name: 'Copilot Desktop', category: 'Desktop', installed: true },
+    ])
+  );
+  expect(state.copilotAccounts.selectedId).toBe(cliRow.id);
+  act(() => state.setSelectedTool('copilotdesktop'));
+  await tick();
+  expect(api.listCopilotAccounts).toHaveBeenLastCalledWith('copilotdesktop');
+  expect(state.copilotAccounts.selectedId).toBe(desktopRow.id);
+  act(() => state.setSelectedTool('copilot'));
+  await tick();
+  expect(api.listCopilotAccounts).toHaveBeenLastCalledWith('copilot');
+  expect(state.copilotAccounts.selectedId).toBe(cliRow.id);
+  expect(api.startCopilotLogin).not.toHaveBeenCalled();
+  expect(api.refreshCopilotAccount).not.toHaveBeenCalled();
+  expect(api.switchCopilotAccount).not.toHaveBeenCalled();
+  expect(api.startTool).not.toHaveBeenCalled();
+});
+
+it.each(clientCases)('$tool: an uninstalled tool never loads account data', async (client) => {
+  await mount(client.tool, false);
+  expect(api[client.list]).not.toHaveBeenCalled();
+  act(() => useNavigationStore.getState().setActivePage('accounts'));
+  await tick();
+  expect(api[client.list]).not.toHaveBeenCalled();
+});
+
+it.each(clientCases)(
+  '$tool: positive control applies the account before native launch',
+  async (client) => {
+    const row = client.family === 'kilo' ? kiloFixture : copilotFixture;
+    vi.mocked(api[client.list]).mockResolvedValue([row] as never);
+    await mount(client.tool);
+    act(() => state.setLaunchAfterApply(true));
+    let complete!: (value: unknown) => void;
+    vi.mocked(api[client.apply]).mockReturnValueOnce(
+      new Promise((resolve) => {
+        complete = resolve;
+      }) as never
+    );
+    let task!: Promise<void>;
+    act(() => {
+      task = state.handleLaunch();
+    });
+    await tick();
+    expect(api[client.apply]).toHaveBeenCalledExactlyOnceWith(row.id, client.tool);
+    expect(api.startTool).not.toHaveBeenCalled();
+    await act(async () => {
+      await state.handleLaunch();
+    });
+    expect(api[client.apply]).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      complete(row);
+      await task;
+    });
+    expect(api.startTool).toHaveBeenCalledWith(
+      client.tool,
+      undefined,
+      client.tool === 'kilo' || client.tool === 'copilot' ? 'E:/fixture-project' : undefined
+    );
+    expect(api[client.refresh]).not.toHaveBeenCalled();
+    expect(state.applyError).toBeNull();
+  }
+);
+
+it.each(clientCases)(
+  '$tool: native apply failure remains visible and prevents launch',
+  async (client) => {
+    const row = client.family === 'kilo' ? kiloFixture : copilotFixture;
+    vi.mocked(api[client.list]).mockResolvedValue([row] as never);
+    vi.mocked(api[client.apply]).mockRejectedValueOnce(new Error('accountError.write'));
+    await mount(client.tool);
+    await act(async () => {
+      await state.handleLaunch();
+    });
+    expect(clientGroup(client.family).accounts).toEqual([row]);
+    expect(state.applyError).toBe('accountError.write');
+    expect(api.startTool).not.toHaveBeenCalled();
+  }
+);
+
+it.each(clientCases)(
+  '$tool: account and API model choices are exclusive without native writes',
+  async (client) => {
+    vi.mocked(api[client.list]).mockResolvedValue([
+      client.family === 'kilo' ? kiloFixture : copilotFixture,
+    ] as never);
+    await mount(client.tool);
+    act(() => state.handleSelectModel(client.tool, 'fixture-model'));
+    expect(clientGroup(client.family).selectedId).toBeNull();
+    act(() => clientGroup(client.family).select('chosen-account'));
+    expect(state.toolModelConfig[client.tool]).toBeNull();
+    expect(clientGroup(client.family).selectedId).toBe('chosen-account');
+    expect(api[client.apply]).not.toHaveBeenCalled();
+  }
+);
+
+it.each(['kilo', 'copilot'] as const)(
+  '%s: switching between CLI and Desktop cancels login and ignores late completion',
+  async (family) => {
+    const expiresAt = Date.now() / 1000 + 60;
+    const start = family === 'kilo' ? 'startKiloLogin' : 'startCopilotLogin';
+    const poll = family === 'kilo' ? 'pollKiloLogin' : 'pollCopilotLogin';
+    const cancel = family === 'kilo' ? 'cancelKiloLogin' : 'cancelCopilotLogin';
+    vi.mocked(api[start]).mockResolvedValue({
+      loginId: 'fixture-login',
+      verificationUri: 'https://kilo.ai/login',
+      expiresAt,
+    } as never);
+    let resolve!: (value: unknown) => void;
+    vi.mocked(api[poll]).mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }) as never
+    );
+    await mount(family);
+    act(() =>
+      useToolsStore.getState().setDetectedTools([
+        { id: family, name: family, category: 'CLI Code', installed: true },
+        { id: `${family}desktop`, name: family, category: 'Desktop', installed: true },
+      ])
+    );
+    let task!: Promise<void>;
+    await act(async () => {
+      task = clientGroup(family).add();
+    });
+    expect(api[start]).toHaveBeenCalledTimes(1);
+    if (family === 'kilo') expect(api.openExternal).toHaveBeenCalledWith('https://kilo.ai/login');
+    else expect(api.openExternal).not.toHaveBeenCalled();
+    act(() => state.setSelectedTool(`${family}desktop`));
+    await tick();
+    expect(api[cancel]).toHaveBeenCalledWith('fixture-login');
+    await act(async () => {
+      resolve(family === 'kilo' ? kiloFixture : copilotFixture);
+      await task;
+    });
+    expect(clientGroup(family).accounts).toEqual([]);
+    expect(clientGroup(family).busy).toBe(false);
+  }
+);
+
+it.each(['kilo', 'copilot'] as const)(
+  '%s: login has a 60-second deadline and adding never refreshes quota',
+  async (family) => {
+    const start = family === 'kilo' ? 'startKiloLogin' : 'startCopilotLogin';
+    const poll = family === 'kilo' ? 'pollKiloLogin' : 'pollCopilotLogin';
+    const cancel = family === 'kilo' ? 'cancelKiloLogin' : 'cancelCopilotLogin';
+    const refresh = family === 'kilo' ? 'refreshKiloAccount' : 'refreshCopilotAccount';
+    vi.mocked(api[start]).mockResolvedValue({
+      loginId: 'deadline-login',
+      verificationUri: 'https://kilo.ai/login',
+      expiresAt: Date.now() / 1000 + 600,
+    } as never);
+    vi.mocked(api[poll]).mockResolvedValue(null);
+    await mount(family);
+    let task!: Promise<void>;
+    await act(async () => {
+      task = clientGroup(family).add();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_001);
+      await task;
+    });
+    expect(api[cancel]).toHaveBeenCalledWith('deadline-login');
+    expect(clientGroup(family).busy).toBe(false);
+    expect(api[refresh]).not.toHaveBeenCalled();
+  }
+);
 
 function accountCardIds() {
   return renderer.root
@@ -303,6 +706,183 @@ function dropAccountCard(activeId: string, overId: string | null) {
     });
   });
 }
+
+function pendingAccountList<T>() {
+  let resolve!: (rows: T[]) => void;
+  const promise = new Promise<T[]>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function mountAccountCenter(tools: Tool[]) {
+  useToolsStore
+    .getState()
+    .setDetectedTools(tools.map((id) => ({ id, name: id, category: 'Desktop', installed: true })));
+  useNavigationStore.getState().setActivePage('accounts');
+  await act(async () => {
+    renderer = create(
+      <AppManagerProvider>
+        <Harness center />
+      </AppManagerProvider>
+    );
+  });
+}
+
+function expectPassiveAccountNavigation() {
+  for (const [key, action] of Object.entries(api))
+    if (/^(start|refresh|switch|delete|claim|restore|apply)/.test(key) && vi.isMockFunction(action))
+      expect(action, key).not.toHaveBeenCalled();
+  expect(folderPicker).not.toHaveBeenCalled();
+  expect(shellOpen).not.toHaveBeenCalled();
+  expect(state.applyError).toBeNull();
+  expect(applyErrorEvents.filter(Boolean)).toEqual([]);
+}
+
+it('Account Center: first load keeps the skeleton until all installed providers settle', async () => {
+  const storage = mockAccountOrderStorage();
+  const codex = pendingAccountList<api.CodexAccount>();
+  const workBuddy = pendingAccountList<api.WorkBuddyAccount>();
+  vi.mocked(api.listCodexAccounts).mockReturnValueOnce(codex.promise);
+  vi.mocked(api.listWorkBuddyAccounts).mockReturnValueOnce(workBuddy.promise);
+  await mountAccountCenter(['codex', 'workbuddy']);
+  expect(accountCardIds()).toEqual([]);
+  expect(renderer.root.findByProps({ 'aria-label': 'accountCenter.loading' })).toBeDefined();
+  expect(api.listCodexAccounts).not.toHaveBeenCalled();
+  expect(api.listWorkBuddyAccounts).not.toHaveBeenCalled();
+  await tick();
+  expect(api.listCodexAccounts).toHaveBeenCalledTimes(1);
+  expect(api.listWorkBuddyAccounts).toHaveBeenCalledTimes(1);
+  await act(async () => workBuddy.resolve([rewardAccount]));
+  expect(accountCardIds()).toEqual([]);
+  expect(renderer.root.findByProps({ 'aria-label': 'accountCenter.loading' })).toBeDefined();
+  expect(storage.cacheWrites).not.toHaveBeenCalled();
+  const claimAll = renderer.root.findByProps({ 'aria-label': 'accountCenter.claimAll' });
+  const refreshAll = renderer.root.findByProps({ 'aria-label': 'accountCenter.refreshAll' });
+  expect(claimAll.props.disabled).toBe(true);
+  expect(refreshAll.props.disabled).toBe(true);
+  await act(async () => {
+    await Promise.all([claimAll.props.onClick(), refreshAll.props.onClick()]);
+  });
+  expect(api.claimWorkBuddyDailyCredits).not.toHaveBeenCalled();
+  expect(api.refreshWorkBuddyAccountQuota).not.toHaveBeenCalled();
+  expect(api.refreshCodexAccountQuota).not.toHaveBeenCalled();
+  await act(async () =>
+    codex.resolve([{ id: 'first', email: 'first@example.test', active: false }])
+  );
+  expect(accountCardIds()).toEqual(['codex:first', 'workbuddy:reward']);
+  expect(renderer.root.findAllByProps({ 'aria-label': 'accountCenter.loading' })).toEqual([]);
+  expect(claimAll.props.disabled).toBe(false);
+  expect(refreshAll.props.disabled).toBe(false);
+  expect(storage.cacheWrites).toHaveBeenCalledTimes(1);
+  expectPassiveAccountNavigation();
+});
+
+it('Account Center: remount shows the persisted complete grid and replaces it only after every background read', async () => {
+  mockAccountOrderStorage();
+  vi.mocked(api.listCodexAccounts).mockResolvedValue([
+    { id: 'first', email: 'first@example.test', active: false },
+  ]);
+  vi.mocked(api.listDeepSeekAccounts).mockResolvedValue([
+    { id: 'second', name: 'Second', active: false, balances: null },
+  ]);
+  await mountAccountCenter(['codex', 'dsh']);
+  await tick();
+  expect(accountCardIds()).toEqual(['codex:first', 'dsh:second']);
+  act(() => renderer.unmount());
+  const codex = pendingAccountList<api.CodexAccount>();
+  const deepSeek = pendingAccountList<api.DeepSeekAccount>();
+  vi.mocked(api.listCodexAccounts).mockReturnValueOnce(codex.promise);
+  vi.mocked(api.listDeepSeekAccounts).mockReturnValueOnce(deepSeek.promise);
+  await mountAccountCenter(['codex', 'dsh']);
+  expect(accountCardIds()).toEqual(['codex:first', 'dsh:second']);
+  expect(renderer.root.findAllByProps({ 'aria-label': 'accountCenter.loading' })).toEqual([]);
+  expect(
+    renderer.root.findByProps({ 'aria-label': 'agent.refreshAccount first@example.test' }).props
+      .disabled
+  ).toBe(true);
+  await tick();
+  await act(async () => codex.resolve([{ id: 'new', email: 'new@example.test', active: false }]));
+  expect(accountCardIds()).toEqual(['codex:first', 'dsh:second']);
+  expect(renderer.root.findAllByProps({ 'aria-label': 'model.dragSort new@example.test' })).toEqual(
+    []
+  );
+  const claimAll = renderer.root.findByProps({ 'aria-label': 'accountCenter.claimAll' });
+  const refreshAll = renderer.root.findByProps({ 'aria-label': 'accountCenter.refreshAll' });
+  expect(claimAll.props.disabled).toBe(true);
+  expect(refreshAll.props.disabled).toBe(true);
+  await act(async () => {
+    await claimAll.props.onClick();
+    await refreshAll.props.onClick();
+  });
+  expect(api.refreshCodexAccountQuota).not.toHaveBeenCalled();
+  expect(api.refreshDeepSeekAccountQuota).not.toHaveBeenCalled();
+  await act(async () =>
+    deepSeek.resolve([{ id: 'third', name: 'Third', active: false, balances: null }])
+  );
+  expect(accountCardIds()).toEqual(['codex:new', 'dsh:third']);
+  expect(
+    renderer.root.findByProps({ 'aria-label': 'agent.refreshAccount new@example.test' }).props
+      .disabled
+  ).toBe(false);
+  expect(claimAll.props.disabled).toBe(false);
+  expect(refreshAll.props.disabled).toBe(false);
+  expectPassiveAccountNavigation();
+});
+
+it('Account Center: returning before reload starts preserves the complete cache and ignores an older navigation read', async () => {
+  const storage = mockAccountOrderStorage();
+  vi.mocked(api.listCodexAccounts).mockResolvedValue([
+    { id: 'first', email: 'first@example.test', active: false },
+  ]);
+  vi.mocked(api.listDeepSeekAccounts).mockResolvedValue([
+    { id: 'second', name: 'Second', active: false, balances: null },
+  ]);
+  await mountAccountCenter(['codex', 'dsh']);
+  await tick();
+  const initialWrites = storage.cacheWrites.mock.calls.length;
+  const oldCodex = pendingAccountList<api.CodexAccount>();
+  const oldDeepSeek = pendingAccountList<api.DeepSeekAccount>();
+  vi.mocked(api.listCodexAccounts).mockReturnValueOnce(oldCodex.promise);
+  vi.mocked(api.listDeepSeekAccounts).mockReturnValueOnce(oldDeepSeek.promise);
+  act(() => useNavigationStore.getState().setActivePage('models'));
+  await tick();
+  act(() => useNavigationStore.getState().setActivePage('accounts'));
+  expect(accountCardIds()).toEqual(['codex:first', 'dsh:second']);
+  expect(api.listCodexAccounts).toHaveBeenCalledTimes(1);
+  await tick();
+  await act(async () =>
+    oldCodex.resolve([{ id: 'stale', email: 'stale@example.test', active: false }])
+  );
+  expect(accountCardIds()).toEqual(['codex:first', 'dsh:second']);
+  act(() => useNavigationStore.getState().setActivePage('models'));
+  await tick();
+  const codex = pendingAccountList<api.CodexAccount>();
+  const deepSeek = pendingAccountList<api.DeepSeekAccount>();
+  vi.mocked(api.listCodexAccounts).mockReturnValueOnce(codex.promise);
+  vi.mocked(api.listDeepSeekAccounts).mockReturnValueOnce(deepSeek.promise);
+  act(() => useNavigationStore.getState().setActivePage('accounts'));
+  expect(accountCardIds()).toEqual(['codex:first', 'dsh:second']);
+  expect(
+    renderer.root.findByProps({ 'aria-label': 'model.dragSort first@example.test' }).props.disabled
+  ).toBe(true);
+  expect(storage.cacheWrites).toHaveBeenCalledTimes(initialWrites);
+  await tick();
+  await act(async () =>
+    oldDeepSeek.resolve([{ id: 'stale', name: 'Stale', active: false, balances: null }])
+  );
+  expect(accountCardIds()).toEqual(['codex:first', 'dsh:second']);
+  expect(storage.cacheWrites).toHaveBeenCalledTimes(initialWrites);
+  await act(async () =>
+    codex.resolve([{ id: 'current', email: 'current@example.test', active: false }])
+  );
+  expect(accountCardIds()).toEqual(['codex:first', 'dsh:second']);
+  await act(async () =>
+    deepSeek.resolve([{ id: 'current', name: 'Current', active: false, balances: null }])
+  );
+  expect(accountCardIds()).toEqual(['codex:current', 'dsh:current']);
+  expectPassiveAccountNavigation();
+});
 
 it('Account Center: saves cross-provider card order, restores it on remount and isolates refresh', async () => {
   const storage = mockAccountOrderStorage();
@@ -659,6 +1239,10 @@ const refreshFor = {
   dsh: 'refreshDeepSeekAccountQuota',
   workbuddy: 'refreshWorkBuddyAccountQuota',
   workbuddyai: 'refreshWorkBuddyAccountQuota',
+  trae: 'refreshTraeAccountQuota',
+  traecn: 'refreshTraeAccountQuota',
+  kirocrew: 'refreshKiroAccountQuota',
+  kirocli: 'refreshKiroAccountQuota',
   antigravity: 'refreshAntigravityAccount',
   antigravitydesktop: 'refreshAntigravityAccount',
   cursor: 'refreshCursorAccount',
@@ -679,7 +1263,12 @@ it.each(Object.keys(listFor) as Tool[])(
       name: 'Saved user',
       email: 'saved@example.test',
       active: true,
-      edition: tool === 'workbuddyai' ? 'workbuddyai' : 'workbuddy',
+      edition:
+        tool === 'trae' || tool === 'traecn' || tool === 'kirocrew' || tool === 'kirocli'
+          ? tool
+          : tool === 'workbuddyai'
+            ? 'workbuddyai'
+            : 'workbuddy',
       provider: 'bigmodel',
       plan: 'Plus',
       quotaPercent: 64,
@@ -691,6 +1280,7 @@ it.each(Object.keys(listFor) as Tool[])(
       sevenDay: { remainingPercent: 64, resetAt },
       balances: [{ currency: 'CNY', amount: 12.34 }],
       quotas: [{ name: 'gemini-pro', remainingPercent: 64, resetAt }],
+      quota: [{ label: 'credits', remaining: 64, total: 100, resetAt }],
       usage: { remainingPercent: 64, resetAt, plan: 'Plus' },
       credits: { total: 500 },
     };
@@ -879,7 +1469,7 @@ it('Account Center: a batch marks only authorization failures, preserves them on
       resolve = done;
     })
   );
-  let task!: Promise<void>;
+  let task!: Promise<unknown>;
   act(() => {
     task = state.refreshCodexAccountQuota(state.codexAccounts.find((row) => row.id === 'same')!);
   });
@@ -1550,7 +2140,7 @@ it.each(['claudecode', 'workbuddy', 'dsh', 'chatgptdesktop'] as const)(
       dsh: state.deepSeekAccounts.refresh,
       chatgptdesktop: state.refreshCodexAccountQuota,
     }[tool];
-    let task!: Promise<void>;
+    let task!: Promise<unknown>;
     act(() => {
       task = refresh(row);
       void refresh(row);
@@ -1594,7 +2184,7 @@ it.each(['workbuddy', 'dsh'] as const)(
     const accountState = () =>
       tool === 'workbuddy' ? state.workBuddyAccounts : state.deepSeekAccounts;
     let loginTask!: Promise<void>;
-    let refreshTask!: Promise<void>;
+    let refreshTask!: Promise<unknown>;
     await act(async () => {
       loginTask = accountState().add();
       refreshTask = accountState().refresh(row);
@@ -1925,9 +2515,13 @@ it('Account Center: loads installed groups once, shared stores once, and WorkBud
   act(() => useNavigationStore.getState().setActivePage('accounts'));
   await tick();
   for (const list of listNames)
-    expect(api[list]).toHaveBeenCalledTimes(list === 'listWorkBuddyAccounts' ? 2 : 1);
+    expect(api[list]).toHaveBeenCalledTimes(
+      ['listWorkBuddyAccounts', 'listTraeAccounts'].includes(list) ? 2 : 1
+    );
   expect(api.listWorkBuddyAccounts).toHaveBeenCalledWith('workbuddy');
   expect(api.listWorkBuddyAccounts).toHaveBeenCalledWith('workbuddyai');
+  expect(api.listTraeAccounts).toHaveBeenCalledWith('trae');
+  expect(api.listTraeAccounts).toHaveBeenCalledWith('traecn');
   for (const name of ['start', 'refresh', 'switch', 'delete', 'claim', 'apply'] as const) {
     for (const [key, action] of Object.entries(api))
       if (key.startsWith(name) && vi.isMockFunction(action)) expect(action).not.toHaveBeenCalled();
@@ -2540,7 +3134,7 @@ it('ZCode: explicit quota failure remains visible and cached, delete uses the sh
       finish = resolve;
     })
   );
-  let refresh!: Promise<void>;
+  let refresh!: Promise<unknown>;
   await act(async () => {
     refresh = state.zcodeAccounts.refresh(zcodeRow);
   });
@@ -2561,4 +3155,325 @@ it('ZCode: explicit quota failure remains visible and cached, delete uses the sh
   expect(api.deleteZCodeAccount).toHaveBeenCalledWith(zcodeRow.id);
   expect(state.zcodeAccounts.accounts).toEqual([]);
   expect(state.zcodeAccounts.selectedId).toBeNull();
+});
+
+const traeRow: api.TraeAccount = {
+  id: 'same',
+  edition: 'traecn',
+  name: 'CN account',
+  plan: 'Pro',
+  active: true,
+  remaining: 20,
+};
+
+it.each(['trae', 'traecn'] as const)(
+  '%s: account-only panel and passive navigation preserve native account/model state',
+  async (edition) => {
+    const storage = mockAccountOrderStorage();
+    vi.mocked(api.listTraeAccounts).mockImplementation(async (scope) => [
+      { ...traeRow, edition: scope, name: scope },
+    ]);
+    await mount(edition);
+    act(() =>
+      renderer.update(
+        <AppManagerProvider>
+          <Harness panel />
+        </AppManagerProvider>
+      )
+    );
+    expect(renderer.root.findAllByType(TraeAccountSection)).toHaveLength(1);
+    for (const mode of ['install', 'desktop'] as const) {
+      act(() => state.setViewMode(mode));
+      await tick();
+    }
+    for (const page of ['models', 'accounts', 'apps'] as const) {
+      act(() => useNavigationStore.getState().setActivePage(page));
+      await tick();
+    }
+    expect(state.traeAccountGroups[edition].accounts[0].edition).toBe(edition);
+    expect(storage.setItem).not.toHaveBeenCalled();
+    for (const [key, action] of Object.entries(api))
+      if (/^(start|refresh|switch|delete|claim|restore)/.test(key) && vi.isMockFunction(action))
+        expect(action).not.toHaveBeenCalled();
+    expect(folderPicker).not.toHaveBeenCalled();
+    expect(state.applyError).toBeNull();
+  }
+);
+
+it.each(['trae', 'traecn'] as const)(
+  '%s: explicit account apply switches its own region and launches without model restore',
+  async (edition) => {
+    vi.mocked(api.listTraeAccounts).mockImplementation(async (scope) => [
+      { ...traeRow, edition: scope },
+    ]);
+    vi.mocked(api.switchTraeAccount).mockResolvedValue(undefined);
+    await mount(edition);
+    await act(async () => {
+      await state.handleLaunch();
+    });
+    expect(api.switchTraeAccount).toHaveBeenCalledExactlyOnceWith(edition, traeRow.id);
+    expect(api.startTool).toHaveBeenCalledExactlyOnceWith(edition, undefined);
+    expect(api.restoreToolToOfficial).not.toHaveBeenCalled();
+    expect(api.refreshTraeAccountQuota).not.toHaveBeenCalled();
+    expect(api.claimTraeDailyCredits).not.toHaveBeenCalled();
+    expect(folderPicker).not.toHaveBeenCalled();
+    expect(state.isLaunching).toBe(false);
+  }
+);
+
+it('TRAE: pending account apply cannot be repeated after the normal launch cooldown', async () => {
+  vi.mocked(api.listTraeAccounts).mockResolvedValue([traeRow]);
+  await mount('traecn');
+  let resolve!: () => void;
+  vi.mocked(api.switchTraeAccount).mockReturnValueOnce(
+    new Promise<void>((done) => {
+      resolve = done;
+    })
+  );
+  let applying!: Promise<void>;
+  act(() => {
+    applying = state.handleLaunch();
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3100);
+    await state.handleLaunch();
+  });
+  expect(state.isLaunching).toBe(true);
+  expect(api.switchTraeAccount).toHaveBeenCalledTimes(1);
+  expect(api.startTool).not.toHaveBeenCalled();
+  await act(async () => {
+    resolve();
+    await applying;
+  });
+  expect(api.startTool).toHaveBeenCalledExactlyOnceWith('traecn', undefined);
+});
+
+it('TRAE: explicit switch failure is visible and prevents launch', async () => {
+  vi.mocked(api.listTraeAccounts).mockResolvedValue([traeRow]);
+  vi.mocked(api.switchTraeAccount).mockRejectedValueOnce(new Error('accountError.write'));
+  await mount('traecn');
+  await act(async () => {
+    await state.handleLaunch();
+  });
+  expect(state.applyError).toBe('accountError.write');
+  expect(state.traeAccounts.accounts).toEqual([traeRow]);
+  expect(api.startTool).not.toHaveBeenCalled();
+  expect(api.restoreToolToOfficial).not.toHaveBeenCalled();
+});
+
+it('Account Center: TRAE regions stay separate and the shared reward batch skips unavailable rows', async () => {
+  const now = Date.now() / 1000;
+  const claimed = { ...traeRow, id: 'claimed', name: 'Claimed', dailyClaimedAt: now };
+  const eligible = { ...traeRow, id: 'eligible', name: 'Eligible', active: false };
+  const disabled = { ...traeRow, id: 'disabled', name: 'Disabled', rewardEnabled: false };
+  vi.mocked(api.listTraeAccounts).mockImplementation(async (edition) =>
+    edition === 'traecn'
+      ? [claimed, eligible, disabled]
+      : [{ ...traeRow, edition: 'trae', name: 'Global' }]
+  );
+  vi.mocked(api.claimTraeDailyCredits).mockResolvedValue({
+    ...eligible,
+    dailyClaimedAt: now,
+    deviceClaimedAt: now,
+    remaining: 120,
+  });
+  await showAccountCenter(['traecn', 'trae']);
+  expect(state.traeAccountGroups.trae.accounts[0].edition).toBe('trae');
+  expect(state.traeAccountGroups.traecn.accounts).toHaveLength(3);
+  expect(api.claimTraeDailyCredits).not.toHaveBeenCalled();
+  expect(
+    renderer.root
+      .findAllByType('button')
+      .some((button) => button.props['aria-label'] === 'agent.claimDailyCredits Global')
+  ).toBe(false);
+  await act(async () => {
+    await renderer.root.findByProps({ 'aria-label': 'accountCenter.claimAll' }).props.onClick();
+  });
+  expect(api.claimTraeDailyCredits).toHaveBeenCalledExactlyOnceWith('traecn', 'eligible');
+  expect(
+    state.traeAccountGroups.traecn.accounts.find((row) => row.id === 'eligible')?.remaining
+  ).toBe(120);
+  expect(api.refreshTraeAccountQuota).not.toHaveBeenCalled();
+  expect(api.switchTraeAccount).not.toHaveBeenCalled();
+  expect(api.startTraeLogin).not.toHaveBeenCalled();
+});
+
+it('Account Center: a used TRAE device leaves unclaimed gifts disabled and does not request status or rewards', async () => {
+  vi.mocked(api.listTraeAccounts).mockResolvedValue([
+    { ...traeRow, deviceClaimedAt: Date.now() / 1000 },
+    { ...traeRow, id: 'other', name: 'Other', active: false },
+  ]);
+  await showAccountCenter(['traecn']);
+  const other = renderer.root.findByProps({ 'aria-label': 'agent.claimDailyCredits Other' });
+  expect(other.props.disabled).toBe(true);
+  await act(async () => {
+    await renderer.root.findByProps({ 'aria-label': 'accountCenter.claimAll' }).props.onClick();
+  });
+  expect(api.claimTraeDailyCredits).not.toHaveBeenCalled();
+  expect(api.refreshTraeAccountQuota).not.toHaveBeenCalled();
+});
+
+it('Account Center: an explicit TRAE reward batch rechecks eligibility after China midnight', async () => {
+  vi.setSystemTime(new Date('2026-10-13T15:59:30Z'));
+  const beforeMidnight = Date.now() / 1000;
+  const account = {
+    ...traeRow,
+    dailyClaimedAt: beforeMidnight,
+    deviceClaimedAt: beforeMidnight,
+  };
+  vi.mocked(api.listTraeAccounts).mockResolvedValue([account]);
+  vi.mocked(api.claimTraeDailyCredits).mockResolvedValue({
+    ...account,
+    dailyClaimedAt: beforeMidnight + 60,
+    deviceClaimedAt: beforeMidnight + 60,
+  });
+  await showAccountCenter(['traecn']);
+  expect(api.claimTraeDailyCredits).not.toHaveBeenCalled();
+  vi.setSystemTime(new Date('2026-10-13T16:00:01Z'));
+  expect(api.claimTraeDailyCredits).not.toHaveBeenCalled();
+  await act(async () => {
+    await renderer.root.findByProps({ 'aria-label': 'accountCenter.claimAll' }).props.onClick();
+  });
+  expect(api.claimTraeDailyCredits).toHaveBeenCalledExactlyOnceWith('traecn', account.id);
+  expect(api.refreshTraeAccountQuota).not.toHaveBeenCalled();
+  expect(api.startTraeLogin).not.toHaveBeenCalled();
+  expect(api.switchTraeAccount).not.toHaveBeenCalled();
+});
+
+it.each(['failure', 'success'] as const)(
+  'Account Center: a TRAE reward batch rechecks the next row after an asynchronous %s',
+  async (outcome) => {
+    const first = { ...traeRow, id: 'first', name: 'First' };
+    const second = { ...traeRow, id: 'second', name: 'Second', active: false };
+    vi.mocked(api.listTraeAccounts).mockResolvedValue([first, second]);
+    let resolve!: (account: api.TraeAccount) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(api.claimTraeDailyCredits)
+      .mockReset()
+      .mockReturnValueOnce(
+        new Promise<api.TraeAccount>((done, fail) => {
+          resolve = done;
+          reject = fail;
+        })
+      )
+      .mockResolvedValueOnce({
+        ...second,
+        dailyClaimedAt: Date.now() / 1000,
+        deviceClaimedAt: Date.now() / 1000,
+      });
+    await showAccountCenter(['traecn']);
+    expect(api.claimTraeDailyCredits).not.toHaveBeenCalled();
+    let batch!: Promise<void>;
+    await act(async () => {
+      batch = renderer.root.findByProps({ 'aria-label': 'accountCenter.claimAll' }).props.onClick();
+    });
+    expect(api.claimTraeDailyCredits).toHaveBeenCalledExactlyOnceWith('traecn', first.id);
+    expect(state.traeAccountGroups.traecn.refreshing.has(first.id)).toBe(true);
+    await act(async () => {
+      if (outcome === 'failure') reject(new Error('accountError.network'));
+      else
+        resolve({
+          ...first,
+          dailyClaimedAt: Date.now() / 1000,
+          deviceClaimedAt: Date.now() / 1000,
+        });
+      await batch;
+    });
+    expect(api.claimTraeDailyCredits).toHaveBeenCalledTimes(outcome === 'failure' ? 2 : 1);
+    if (outcome === 'failure') {
+      expect(api.claimTraeDailyCredits).toHaveBeenLastCalledWith('traecn', second.id);
+      expect(state.applyError).toBe('accountError.network');
+    }
+    expect(state.traeAccountGroups.traecn.refreshing.size).toBe(0);
+    expect(api.refreshTraeAccountQuota).not.toHaveBeenCalled();
+    expect(api.startTraeLogin).not.toHaveBeenCalled();
+    expect(api.switchTraeAccount).not.toHaveBeenCalled();
+  }
+);
+
+it.each(['kirocrew', 'kirocli'] as const)(
+  '%s: passive navigation loads accounts without quota, login, account writes or dialogs',
+  async (edition) => {
+    const row: api.KiroAccount = {
+      id: 'kiro-user',
+      edition,
+      name: 'Kiro user',
+      plan: 'Free',
+      active: true,
+      quota: [],
+    };
+    vi.mocked(api.listKiroAccounts).mockResolvedValue([row]);
+    await mount(edition);
+    expect(state.kiroAccounts.accounts).toEqual([row]);
+    expect(state.kiroAccounts.selectedId).toBe(row.id);
+    for (const page of ['accounts', 'models', 'apps'] as const) {
+      act(() => useNavigationStore.getState().setActivePage(page));
+      await tick();
+    }
+    for (const method of [
+      api.startKiroLogin,
+      api.refreshKiroAccountQuota,
+      api.switchKiroAccount,
+      api.deleteKiroAccount,
+      api.startTool,
+    ])
+      expect(method).not.toHaveBeenCalled();
+    expect(folderPicker).not.toHaveBeenCalled();
+    expect(state.applyError).toBeNull();
+  }
+);
+
+it.each(['kirocrew', 'kirocli'] as const)(
+  '%s: applying an account reuses the existing launch and directory flow',
+  async (edition) => {
+    const row: api.KiroAccount = {
+      id: 'kiro-user',
+      edition,
+      name: 'Kiro user',
+      active: true,
+      quota: [],
+    };
+    vi.mocked(api.listKiroAccounts).mockResolvedValue([row]);
+    vi.mocked(api.switchKiroAccount).mockResolvedValue(undefined);
+    await mount(edition);
+    await act(async () => {
+      await state.handleLaunch();
+    });
+    expect(api.switchKiroAccount).toHaveBeenCalledExactlyOnceWith(edition, row.id);
+    if (edition === 'kirocli') {
+      expect(folderPicker).toHaveBeenCalledExactlyOnceWith({ directory: true, multiple: false });
+      expect(api.startTool).toHaveBeenCalledExactlyOnceWith(
+        edition,
+        undefined,
+        'E:/fixture-project'
+      );
+    } else {
+      expect(folderPicker).not.toHaveBeenCalled();
+      expect(api.startTool).toHaveBeenCalledExactlyOnceWith(edition, undefined, undefined);
+    }
+    expect(state.isLaunching).toBe(false);
+    expect(api.restoreToolToOfficial).not.toHaveBeenCalled();
+    expect(api.applyModelToTool).not.toHaveBeenCalled();
+    expect(api.refreshKiroAccountQuota).not.toHaveBeenCalled();
+  }
+);
+
+it('Kiro: an explicit switch failure preserves rows and prevents launch', async () => {
+  const row: api.KiroAccount = {
+    id: 'kiro-user',
+    edition: 'kirocrew',
+    name: 'Kiro user',
+    active: true,
+    quota: [],
+  };
+  vi.mocked(api.listKiroAccounts).mockResolvedValue([row]);
+  vi.mocked(api.switchKiroAccount).mockRejectedValueOnce(new Error('accountError.closeClient'));
+  await mount('kirocrew');
+  await act(async () => {
+    await state.handleLaunch();
+  });
+  expect(state.applyError).toBe('accountError.closeClient');
+  expect(state.kiroAccounts.accounts).toEqual([row]);
+  expect(api.startTool).not.toHaveBeenCalled();
+  expect(folderPicker).not.toHaveBeenCalled();
 });

@@ -13,6 +13,6 @@
     "first_run": {
         "verify": "mcode --version",
         "config_global": "~/.minimax/config.yaml",
-        "note": "Shares API model config with Desktop. EchoBird supports API model switching only; account login is handled by the native CLI. MINIMAX_DATA_DIR (legacy MAVIS_DATA_DIR) overrides the data directory."
+        "note": "Shares API model settings and EchoBird's saved account list with Desktop. Add an account in EchoBird after explicitly selecting China or international; saving does not automatically switch the client. Applying an account switches the selected installed client. MINIMAX_DATA_DIR (legacy MAVIS_DATA_DIR) overrides the native data directory."
     }
 }

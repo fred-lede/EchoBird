@@ -618,6 +618,23 @@ pub fn build_llama_default_command(
 ) -> Result<(String, Vec<String>), String> {
     let exe =
         LocalLlmServer::find_llama_server().ok_or_else(|| "llama-server not found".to_string())?;
+    let args = build_llama_default_args(
+        model_path,
+        internal_port,
+        gpu_layers,
+        context_size,
+        gpu_count,
+    );
+    Ok((exe.to_string_lossy().to_string(), args))
+}
+
+fn build_llama_default_args(
+    model_path: &str,
+    internal_port: u16,
+    gpu_layers: Option<i32>,
+    context_size: Option<u32>,
+    gpu_count: usize,
+) -> Vec<String> {
     let mut args = vec![
         "-m".to_string(),
         model_path.to_string(),
@@ -634,8 +651,31 @@ pub fn build_llama_default_command(
         args.push("-c".to_string());
         args.push(ctx.to_string());
     }
+    let basename = model_path.rsplit(['/', '\\']).next().unwrap_or(model_path);
+    if ["MiniCPM5-2B-Q4_K_M.gguf", "MiniCPM5-2B-Q8_0.gguf"]
+        .iter()
+        .any(|name| basename.eq_ignore_ascii_case(name))
+    {
+        // Official GGUFs omit min_p; the model card recommends 0 to avoid repetition.
+        args.push("--min-p".to_string());
+        args.push("0".to_string());
+    }
+    if [
+        "Qwable-9B-Claude-Fable-5-Q4_K_M.gguf",
+        "Qwable-9B-Claude-Fable-5-Q6_K.gguf",
+        "Qwable-9B-Claude-Fable-5-Q8_0.gguf",
+    ]
+    .iter()
+    .any(|name| basename.eq_ignore_ascii_case(name))
+    {
+        // Publisher recommends a small repetition penalty to avoid reasoning loops.
+        args.push("--min-p".to_string());
+        args.push("0".to_string());
+        args.push("--repeat-penalty".to_string());
+        args.push("1.05".to_string());
+    }
     append_multi_gpu_args(&mut args, "llama-server", gpu_count);
-    Ok((exe.to_string_lossy().to_string(), args))
+    args
 }
 
 /// Force the EchoBird-managed args (`-m` model, `--host`, `--port`) onto a custom
@@ -714,6 +754,122 @@ fn append_multi_gpu_args(args: &mut Vec<String>, runtime: &str, gpu_count: usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minicpm5_2b_default_args_disable_min_p_for_official_files() {
+        for model_path in [
+            "MiniCPM5-2B-Q4_K_M.gguf",
+            "/models/MINICPM5-2B-Q8_0.GGUF",
+            r"D:\models\minicpm5-2b-q4_k_m.gguf",
+        ] {
+            assert_eq!(
+                build_llama_default_args(model_path, 8180, Some(99), Some(8192), 2),
+                [
+                    "-m",
+                    model_path,
+                    "--port",
+                    "8180",
+                    "--host",
+                    "127.0.0.1",
+                    "-ngl",
+                    "99",
+                    "-c",
+                    "8192",
+                    "--min-p",
+                    "0",
+                    "--tensor-split",
+                    "1,1",
+                    "--main-gpu",
+                    "0",
+                ]
+                .map(String::from)
+                .to_vec(),
+                "model path: {model_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn qwable_default_args_follow_publisher_sampling() {
+        for model_path in [
+            "Qwable-9B-Claude-Fable-5-Q4_K_M.gguf",
+            "/models/QWABLE-9B-CLAUDE-FABLE-5-Q6_K.GGUF",
+            r"D:\models\qwable-9b-claude-fable-5-q8_0.gguf",
+        ] {
+            assert_eq!(
+                build_llama_default_args(model_path, 8180, None, None, 1),
+                [
+                    "-m",
+                    model_path,
+                    "--port",
+                    "8180",
+                    "--host",
+                    "127.0.0.1",
+                    "--min-p",
+                    "0",
+                    "--repeat-penalty",
+                    "1.05",
+                ]
+                .map(String::from)
+                .to_vec(),
+                "model path: {model_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_models_and_matching_directories_keep_default_sampling() {
+        for model_path in [
+            "MiniCPM5-1B-Q4_K_M.gguf",
+            "MiniCPM5-2B-DSpark-Q4_K_M.gguf",
+            "MiniCPM5-2B-Distill-Q4_K_M.gguf",
+            "MiniCPM5-20B-Q4_K_M.gguf",
+            "MiniCPM5-2B-Q4_K_M.gguf.downloading",
+            "/models/MiniCPM5-2B-Q4_K_M.gguf/other.gguf",
+            r"D:\models\MiniCPM5-2B-Q8_0.gguf\other.gguf",
+            "Qwable-9B-Claude-Fable-5-Q5_K_M.gguf",
+            "Qwable-9B-Claude-Fable-5-Distill-Q4_K_M.gguf",
+            "Qwable-9B-Claude-Fable-5-Q4_K_M.gguf.downloading",
+            "/models/Qwable-9B-Claude-Fable-5-Q6_K.gguf/other.gguf",
+            r"D:\models\Qwable-9B-Claude-Fable-5-Q8_0.gguf\other.gguf",
+            "LFM2.5-2.6B-Q4_K_M.gguf",
+        ] {
+            assert_eq!(
+                build_llama_default_args(model_path, 8180, None, None, 1),
+                ["-m", model_path, "--port", "8180", "--host", "127.0.0.1"]
+                    .map(String::from)
+                    .to_vec(),
+                "model path: {model_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn model_specific_sampling_keeps_custom_commands() {
+        for model_path in [
+            "MiniCPM5-2B-Q4_K_M.gguf",
+            "Qwable-9B-Claude-Fable-5-Q4_K_M.gguf",
+        ] {
+            for custom in [
+                vec![
+                    "--min-p".into(),
+                    "0.2".into(),
+                    "--repeat-penalty".into(),
+                    "1.2".into(),
+                ],
+                Vec::new(),
+            ] {
+                let mut expected = custom.clone();
+                expected.extend(
+                    ["-m", model_path, "--host", "127.0.0.1", "--port", "8180"].map(String::from),
+                );
+                assert_eq!(
+                    ensure_managed_llama_args(custom, model_path, 8180),
+                    expected
+                );
+            }
+        }
+    }
 
     #[test]
     fn managed_args_replace_when_present_and_append_when_missing() {

@@ -24,7 +24,7 @@ import {
 import { X, Lock, Unlock, RefreshCw, GripVertical } from 'lucide-react';
 import { DirectoryRow } from '../../components/DirectoryRow';
 import { SortableCard } from '../../components/SortableCard';
-import { ModelCard, ModelCardSkeleton, getModelIcon, ModelIdCombobox } from '../../components';
+import { ModelCard, ModelCardSkeleton, getModelIcon } from '../../components';
 import { ViewModeTabs } from '../../components/ViewModeTabs';
 import { useToast } from '../../components/Toast';
 import { useI18n } from '../../hooks/useI18n';
@@ -36,6 +36,8 @@ import type { NewModelForm } from './context';
 import type { ModelUsageData } from '../../api/tauri';
 import modelDirectory from '../../data/modelDirectory.json';
 import { useFreeModels } from '../FreeModels/FreeModels';
+import { AccountModelFields } from './AccountModelFields';
+import { ApiModelFields } from './ApiModelFields';
 
 // ===== Provider =====
 
@@ -218,6 +220,7 @@ export function ModelNexusProvider({ children }: { children: React.ReactNode }) 
         anthropicUrl: freshModel.anthropicUrl || '',
         apiKey: freshModel.apiKey,
         modelId: freshModel.modelId || '',
+        accountSource: freshModel.accountSource,
       });
       setShowAddModelModal(true);
     },
@@ -1279,9 +1282,15 @@ export function AddModelModal() {
             <span className="text-cyber-text font-mono text-sm opacity-60">&gt;_</span>
             <span id="model-config-dialog-title" className="text-base font-bold text-cyber-text">
               {editingModelId
-                ? t('model.editConfig')
+                ? newModelForm.accountSource
+                  ? '编辑账号配置'
+                  : t('model.editConfig')
                 : modelModalDestination === 'freeRouter'
-                  ? t('freeModels.addToRouter')
+                  ? t(
+                      newModelForm.accountSource
+                        ? 'freeModels.addAccountToRouter'
+                        : 'freeModels.addToRouter'
+                    )
                   : t('btn.addModel')}
             </span>
           </div>
@@ -1297,179 +1306,183 @@ export function AddModelModal() {
         {/* Form */}
         <div className="px-5 pb-5">
           <div className="space-y-4">
-            <div>
-              <label className="block text-xs text-cyber-text-secondary mb-1">
-                {t('model.name')}
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. My Model"
-                value={newModelForm.name}
-                onChange={(e) => setNewModelForm((prev) => ({ ...prev, name: e.target.value }))}
-                className="w-full bg-cyber-input border border-cyber-border px-2 py-1.5 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-cyber-text-secondary mb-1">
-                {t('model.openaiUrl')}
-              </label>
-              <div className="relative">
+            {!newModelForm.accountSource && (
+              <div>
+                <label className="block text-xs text-cyber-text-secondary mb-1">
+                  {t('model.name')}
+                </label>
                 <input
                   type="text"
-                  placeholder="https://x.x.com/v1"
-                  value={newModelForm.baseUrl}
-                  onChange={(e) =>
-                    setNewModelForm((prev) => ({
-                      ...prev,
-                      baseUrl: normalizeOpenaiUrl(e.target.value),
-                    }))
-                  }
-                  className="w-full bg-cyber-input border border-cyber-border px-2 py-1.5 pr-16 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button"
+                  placeholder="e.g. My Model"
+                  value={newModelForm.name}
+                  onChange={(e) => setNewModelForm((prev) => ({ ...prev, name: e.target.value }))}
+                  className="w-full bg-cyber-input border border-cyber-border px-2 py-1.5 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button"
                 />
-                {pasteButton('baseUrl', normalizeOpenaiUrl)}
               </div>
-            </div>
-            <div>
-              <label className="block text-xs text-cyber-text-secondary mb-1">
-                {t('model.anthropicUrl')}
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  placeholder="https://x.x.com/anthropic"
-                  value={newModelForm.anthropicUrl}
-                  onChange={(e) =>
-                    setNewModelForm((prev) => ({
-                      ...prev,
-                      anthropicUrl: normalizeAnthropicUrl(e.target.value),
-                    }))
-                  }
-                  className="w-full bg-cyber-input border border-cyber-border px-2 py-1.5 pr-16 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button"
-                />
-                {pasteButton('anthropicUrl', normalizeAnthropicUrl)}
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs text-cyber-text-secondary mb-1">
-                {t('model.modelId')}
-              </label>
-              {/* Single searchable combobox: free-type any id, with a filtered
-                  suggestion dropdown when the clicked directory entry carries a
-                  model id list. No options → plain input. */}
-              <ModelIdCombobox
-                value={newModelForm.modelId}
-                onChange={(v) => setNewModelForm((prev) => ({ ...prev, modelId: v }))}
-                options={newModelForm.modelIdOptions}
-                placeholder={t('model.modelIdPlaceholder')}
-                onPaste={async () => {
-                  try {
-                    const text = (await readClipboardText()).trim();
-                    if (text) setNewModelForm((prev) => ({ ...prev, modelId: text }));
-                  } catch {
-                    /* clipboard empty / unreadable — no-op */
-                  }
-                }}
-                pasteLabel={t('model.paste')}
+            )}
+            {newModelForm.accountSource ? (
+              <AccountModelFields
+                source={newModelForm.accountSource}
+                modelId={newModelForm.modelId}
+                modelIdOptions={newModelForm.modelIdOptions}
+                setForm={setNewModelForm}
+                active={!modelModalAnimatingOut}
               />
-            </div>
-            <div>
-              <label className="block text-xs text-cyber-text-secondary mb-1">
-                {t('model.apiKey')}
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  placeholder="sk-..."
-                  value={
-                    newModelForm.apiKey.startsWith('enc:v1:')
-                      ? '•••••••••••••••'
-                      : newModelForm.apiKey
-                  }
-                  onChange={(e) => setNewModelForm((prev) => ({ ...prev, apiKey: e.target.value }))}
-                  className="w-full bg-cyber-input border border-cyber-border px-2 py-1.5 pr-20 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button"
-                  readOnly={newModelForm.apiKey.startsWith('enc:v1:')}
-                />
-                {/* One-click paste from clipboard — plain text affordance (no
+            ) : (
+              <>
+                <div>
+                  <label className="block text-xs text-cyber-text-secondary mb-1">
+                    {t('model.openaiUrl')}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="https://x.x.com/v1"
+                      value={newModelForm.baseUrl}
+                      onChange={(e) =>
+                        setNewModelForm((prev) => ({
+                          ...prev,
+                          baseUrl: normalizeOpenaiUrl(e.target.value),
+                        }))
+                      }
+                      className="w-full bg-cyber-input border border-cyber-border px-2 py-1.5 pr-16 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button"
+                    />
+                    {pasteButton('baseUrl', normalizeOpenaiUrl)}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-cyber-text-secondary mb-1">
+                    {t('model.anthropicUrl')}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder="https://x.x.com/anthropic"
+                      value={newModelForm.anthropicUrl}
+                      onChange={(e) =>
+                        setNewModelForm((prev) => ({
+                          ...prev,
+                          anthropicUrl: normalizeAnthropicUrl(e.target.value),
+                        }))
+                      }
+                      className="w-full bg-cyber-input border border-cyber-border px-2 py-1.5 pr-16 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button"
+                    />
+                    {pasteButton('anthropicUrl', normalizeAnthropicUrl)}
+                  </div>
+                </div>
+              </>
+            )}
+            {!newModelForm.accountSource && (
+              <ApiModelFields
+                key={editingModelId ?? 'new'}
+                form={newModelForm}
+                setForm={setNewModelForm}
+                editing={!!editingModelId}
+                active={!modelModalAnimatingOut && !isSavingModel}
+              />
+            )}
+            {!newModelForm.accountSource && (
+              <div>
+                <label className="block text-xs text-cyber-text-secondary mb-1">
+                  {t('model.apiKey')}
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="sk-..."
+                    value={
+                      newModelForm.apiKey.startsWith('enc:v1:')
+                        ? '•••••••••••••••'
+                        : newModelForm.apiKey
+                    }
+                    onChange={(e) =>
+                      setNewModelForm((prev) => ({ ...prev, apiKey: e.target.value }))
+                    }
+                    className="w-full bg-cyber-input border border-cyber-border px-2 py-1.5 pr-20 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button"
+                    readOnly={newModelForm.apiKey.startsWith('enc:v1:')}
+                  />
+                  {/* One-click paste from clipboard — plain text affordance (no
                     border / button styling, no hover effect, label never
                     changes). Shown only while the key is editable (plaintext);
                     hidden once encrypted (the field is read-only then). */}
-                {newModelForm.apiKey !== 'not-needed' &&
-                  !newModelForm.apiKey.startsWith('enc:v1:') && (
+                  {newModelForm.apiKey !== 'not-needed' &&
+                    !newModelForm.apiKey.startsWith('enc:v1:') && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const text = (await readClipboardText()).trim();
+                            if (text) {
+                              setNewModelForm((prev) => ({ ...prev, apiKey: text }));
+                            }
+                          } catch {
+                            /* clipboard empty / unreadable — no-op */
+                          }
+                        }}
+                        className="absolute right-8 top-1/2 -translate-y-1/2 cursor-pointer text-xs text-cyber-text-secondary"
+                      >
+                        {t('model.paste')}
+                      </button>
+                    )}
+                  {newModelForm.apiKey !== 'not-needed' && (
                     <button
                       type="button"
+                      disabled={!newModelForm.apiKey}
                       onClick={async () => {
-                        try {
-                          const text = (await readClipboardText()).trim();
-                          if (text) {
-                            setNewModelForm((prev) => ({ ...prev, apiKey: text }));
+                        if (newModelForm.apiKey.startsWith('enc:v1:')) {
+                          try {
+                            const plain = await api.decryptSecret(newModelForm.apiKey);
+                            const newKey = plain || '';
+                            setNewModelForm((prev) => ({ ...prev, apiKey: newKey }));
+                            if (editingModelId) {
+                              setUserModels((prev) =>
+                                prev.map((m) =>
+                                  m.internalId === editingModelId ? { ...m, apiKey: newKey } : m
+                                )
+                              );
+                            }
+                          } catch {
+                            setNewModelForm((prev) => ({ ...prev, apiKey: '' }));
                           }
-                        } catch {
-                          /* clipboard empty / unreadable — no-op */
+                        } else {
+                          try {
+                            const encrypted = await api.encryptSecret(newModelForm.apiKey);
+                            setNewModelForm((prev) => ({ ...prev, apiKey: encrypted }));
+                            if (editingModelId) {
+                              setUserModels((prev) =>
+                                prev.map((m) =>
+                                  m.internalId === editingModelId ? { ...m, apiKey: encrypted } : m
+                                )
+                              );
+                            }
+                          } catch {
+                            // stay plaintext on failure
+                          }
                         }
                       }}
-                      className="absolute right-8 top-1/2 -translate-y-1/2 cursor-pointer text-xs text-cyber-text-secondary"
+                      className={`absolute right-2 top-1/2 -translate-y-1/2 transition-colors hover:opacity-80 ${!newModelForm.apiKey ? 'opacity-30 cursor-not-allowed' : ''}`}
                     >
-                      {t('model.paste')}
+                      {newModelForm.apiKey.startsWith('enc:v1:') ? (
+                        <Lock size={14} className="text-cyber-accent" />
+                      ) : (
+                        <Unlock size={14} className="text-cyber-text/70" />
+                      )}
                     </button>
                   )}
-                {newModelForm.apiKey !== 'not-needed' && (
-                  <button
-                    type="button"
-                    disabled={!newModelForm.apiKey}
-                    onClick={async () => {
-                      if (newModelForm.apiKey.startsWith('enc:v1:')) {
-                        try {
-                          const plain = await api.decryptSecret(newModelForm.apiKey);
-                          const newKey = plain || '';
-                          setNewModelForm((prev) => ({ ...prev, apiKey: newKey }));
-                          if (editingModelId) {
-                            setUserModels((prev) =>
-                              prev.map((m) =>
-                                m.internalId === editingModelId ? { ...m, apiKey: newKey } : m
-                              )
-                            );
-                          }
-                        } catch {
-                          setNewModelForm((prev) => ({ ...prev, apiKey: '' }));
-                        }
-                      } else {
-                        try {
-                          const encrypted = await api.encryptSecret(newModelForm.apiKey);
-                          setNewModelForm((prev) => ({ ...prev, apiKey: encrypted }));
-                          if (editingModelId) {
-                            setUserModels((prev) =>
-                              prev.map((m) =>
-                                m.internalId === editingModelId ? { ...m, apiKey: encrypted } : m
-                              )
-                            );
-                          }
-                        } catch {
-                          // stay plaintext on failure
-                        }
-                      }
-                    }}
-                    className={`absolute right-2 top-1/2 -translate-y-1/2 transition-colors hover:opacity-80 ${!newModelForm.apiKey ? 'opacity-30 cursor-not-allowed' : ''}`}
-                  >
-                    {newModelForm.apiKey.startsWith('enc:v1:') ? (
-                      <Lock size={14} className="text-cyber-accent" />
-                    ) : (
-                      <Unlock size={14} className="text-cyber-text/70" />
-                    )}
-                  </button>
-                )}
-              </div>
-              {/* Encryption hint — always rendered (locale-aware exact
+                </div>
+                {/* Encryption hint — always rendered (locale-aware exact
                   height, no residual space) and toggled via visibility
                   so the form doesn't shift on encrypt / destroy. */}
-              <div
-                aria-hidden={!newModelForm.apiKey.startsWith('enc:v1:')}
-                className={`mt-1 text-xs leading-tight ${
-                  keyDestroyed ? 'text-red-400' : 'text-cyber-text/60'
-                } ${!newModelForm.apiKey.startsWith('enc:v1:') ? 'invisible' : ''}`}
-              >
-                {keyDestroyed ? t('key.destroyed') : t('key.encrypted')}
+                <div
+                  aria-hidden={!newModelForm.apiKey.startsWith('enc:v1:')}
+                  className={`mt-1 text-xs leading-tight ${
+                    keyDestroyed ? 'text-red-400' : 'text-cyber-text/60'
+                  } ${!newModelForm.apiKey.startsWith('enc:v1:') ? 'invisible' : ''}`}
+                >
+                  {keyDestroyed ? t('key.destroyed') : t('key.encrypted')}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
 
@@ -1486,8 +1499,19 @@ export function AddModelModal() {
             disabled={isSavingModel}
             onClick={async () => {
               if (isSavingModel) return;
-              if (newModelForm.baseUrl.trim() && !isValidModelBaseUrl(newModelForm.baseUrl)) {
+              if (
+                !newModelForm.accountSource &&
+                newModelForm.baseUrl.trim() &&
+                !isValidModelBaseUrl(newModelForm.baseUrl)
+              ) {
                 showToast('warning', t('model.invalidOpenaiUrl'));
+                return;
+              }
+              if (
+                newModelForm.accountSource &&
+                (!newModelForm.accountSource.accountId || !newModelForm.modelId.trim())
+              ) {
+                showToast('warning', t('accountProxy.selectRequired'));
                 return;
               }
               if (
@@ -1506,15 +1530,20 @@ export function AddModelModal() {
                     name: newModelForm.name,
                     baseUrl: newModelForm.baseUrl,
                     anthropicUrl: newModelForm.anthropicUrl,
-                    apiKey: newModelForm.apiKey,
+                    apiKey: newModelForm.accountSource ? '' : newModelForm.apiKey,
                     modelId: newModelForm.modelId,
+                    accountSource: newModelForm.accountSource,
                   });
                   if (updatedModel) {
                     updateSelectedModel({
                       internalId: updatedModel.internalId,
                       name: updatedModel.name,
                       baseUrl: updatedModel.baseUrl,
+                      anthropicUrl: updatedModel.anthropicUrl,
+                      apiKey: updatedModel.apiKey,
                       modelId: updatedModel.modelId ?? newModelForm.modelId,
+                      accountSource: updatedModel.accountSource,
+                      scope: updatedModel.scope,
                     });
                     updateUserModel(updatedModel, newModelForm);
                   }
@@ -1523,8 +1552,9 @@ export function AddModelModal() {
                     name: newModelForm.name,
                     baseUrl: newModelForm.baseUrl,
                     anthropicUrl: newModelForm.anthropicUrl || undefined,
-                    apiKey: newModelForm.apiKey,
+                    apiKey: newModelForm.accountSource ? '' : newModelForm.apiKey,
                     modelId: newModelForm.modelId,
+                    accountSource: newModelForm.accountSource,
                     scope: modelModalDestination === 'freeRouter' ? 'smartRouter' : 'modelCenter',
                   });
                   if (modelModalDestination === 'freeRouter') {
@@ -1533,7 +1563,11 @@ export function AddModelModal() {
                         internalId: newModel.internalId,
                         name: newModel.name,
                         baseUrl: newModel.baseUrl,
+                        anthropicUrl: newModel.anthropicUrl,
+                        apiKey: newModel.apiKey,
                         modelId: newModel.modelId ?? newModelForm.modelId,
+                        accountSource: newModel.accountSource,
+                        scope: newModel.scope,
                       });
                     } catch (error) {
                       await api.deleteModel(newModel.internalId).catch((rollbackError) => {

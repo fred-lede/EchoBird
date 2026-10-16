@@ -1,6 +1,8 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, RefreshCw } from 'lucide-react';
+import { isFreeModelOption } from '../utils/modelOptions';
+import './ModelIdCombobox.css';
 
 interface ModelIdComboboxProps {
   value: string;
@@ -8,6 +10,24 @@ interface ModelIdComboboxProps {
   /** Suggestion list. Empty/absent → behaves as a plain text input (no dropdown). */
   options?: string[];
   placeholder?: string;
+  selectOnly?: boolean;
+  compact?: boolean;
+  optionLabels?: Record<string, string>;
+  optionMultipliers?: Record<string, number>;
+  freeModelIds?: readonly string[];
+  paidModelIds?: readonly string[];
+  inferFreeFromId?: boolean;
+  freeLabel?: string;
+  inlineActions?: boolean;
+  actionHint?: string;
+  disabled?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  externalTriggerRef?: RefObject<HTMLElement | null>;
+  ariaLabel?: string;
+  onRefresh?: () => void;
+  refreshLabel?: string;
+  refreshing?: boolean;
   /** Optional one-click paste affordance. When provided, a plain-text "paste"
    *  control (no styling/hover) renders inside the field and calls `onPaste` on
    *  click — the caller owns the clipboard read + value write. `pasteLabel` is
@@ -28,6 +48,7 @@ type MenuPos = {
 };
 
 const MENU_MAX = 240;
+const COMPACT_MENU_MAX = 360;
 
 /**
  * Single-box searchable model-id picker. One input the user can freely type
@@ -42,10 +63,37 @@ export function ModelIdCombobox({
   onChange,
   options = [],
   placeholder,
+  selectOnly = false,
+  compact = false,
+  optionLabels,
+  optionMultipliers,
+  freeModelIds,
+  paidModelIds,
+  inferFreeFromId = true,
+  freeLabel = 'Free',
+  inlineActions = false,
+  actionHint,
+  disabled = false,
+  open,
+  onOpenChange,
+  externalTriggerRef,
+  ariaLabel,
+  onRefresh,
+  refreshLabel,
+  refreshing = false,
   onPaste,
   pasteLabel,
 }: ModelIdComboboxProps) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = open !== undefined;
+  const isOpen = open ?? internalOpen;
+  const setIsOpen = useCallback(
+    (nextOpen: boolean) => {
+      if (!isControlled) setInternalOpen(nextOpen);
+      onOpenChange?.(nextOpen);
+    },
+    [isControlled, onOpenChange]
+  );
   const [activeIdx, setActiveIdx] = useState(-1);
   // Browse vs. search: focus / chevron / arrow = browse (show ALL options so
   // the full list is visible even when the field already holds a valid id);
@@ -53,31 +101,95 @@ export function ModelIdCombobox({
   const [searching, setSearching] = useState(false);
   const [menuPos, setMenuPos] = useState<MenuPos | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLElement | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Dedupe defensively so duplicate ids in the directory data can't collide on
-  // the React `key` below.
-  const opts = useMemo(() => Array.from(new Set(options)), [options]);
+  const freeIds = useMemo(() => {
+    const explicitFree = new Set(freeModelIds);
+    const explicitPaid = new Set(paidModelIds);
+    return new Set(
+      options.filter((id) =>
+        isFreeModelOption(
+          id,
+          {
+            free: explicitPaid.has(id) ? false : explicitFree.has(id) ? true : undefined,
+            multiplier: optionMultipliers?.[id],
+          },
+          inferFreeFromId
+        )
+      )
+    );
+  }, [options, freeModelIds, paidModelIds, optionMultipliers, inferFreeFromId]);
+  // Preserve upstream order within each group and keep duplicate IDs out.
+  const opts = useMemo(
+    () =>
+      Array.from(new Set(options)).sort(
+        (left, right) => Number(freeIds.has(right)) - Number(freeIds.has(left))
+      ),
+    [options, freeIds]
+  );
+  const useInlineActions = inlineActions && !compact;
   const hasOptions = opts.length > 0;
+  const hasChevron = hasOptions || selectOnly;
+  const label = (id: string) => optionLabels?.[id] ?? id;
   const query = value.trim().toLowerCase();
-  const filtered = searching && query ? opts.filter((o) => o.toLowerCase().includes(query)) : opts;
-  const showList = isOpen && hasOptions && filtered.length > 0;
+  const filtered =
+    searching && query ? opts.filter((o) => label(o).toLowerCase().includes(query)) : opts;
+  const showList = !disabled && isOpen && hasOptions && filtered.length > 0;
+  const padding = onRefresh
+    ? hasChevron
+      ? 'pr-14'
+      : onPaste
+        ? 'pr-24'
+        : 'pr-8'
+    : hasChevron
+      ? 'pr-8'
+      : onPaste
+        ? 'pr-16'
+        : '';
+
+  useEffect(() => {
+    if (!isOpen || (!disabled && (!isControlled || hasOptions))) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setIsOpen(false);
+      setActiveIdx(-1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [disabled, hasOptions, isControlled, isOpen, setIsOpen]);
+
+  useEffect(() => {
+    if (!compact || !isControlled || !showList) return;
+    inputRef.current?.focus();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setActiveIdx(-1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [compact, isControlled, showList]);
 
   // Position the portal menu against the input, flipping up when the space
   // below is tight. Recomputed on open and on any scroll/resize while open.
   useEffect(() => {
     if (!showList) return;
     const compute = () => {
-      const el = inputRef.current;
+      const el = useInlineActions ? containerRef.current : inputRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
       const spaceBelow = window.innerHeight - r.bottom;
       const spaceAbove = r.top;
       const dropUp = spaceBelow < Math.min(MENU_MAX, 160) && spaceAbove > spaceBelow;
-      const maxHeight = Math.max(80, Math.min(MENU_MAX, (dropUp ? spaceAbove : spaceBelow) - 8));
+      const availableHeight = Math.max(0, (dropUp ? spaceAbove : spaceBelow) - (compact ? 9 : 8));
+      const maxHeight = compact
+        ? Math.min(COMPACT_MENU_MAX, availableHeight)
+        : Math.max(80, Math.min(MENU_MAX, availableHeight));
       setMenuPos({
-        left: r.left,
+        left: compact ? Math.max(8, r.left) : r.left,
         width: r.width,
         below: r.bottom + 1,
         above: window.innerHeight - r.top + 1,
@@ -92,22 +204,25 @@ export function ModelIdCombobox({
       window.removeEventListener('scroll', compute, true);
       window.removeEventListener('resize', compute);
     };
-  }, [showList, filtered.length]);
+  }, [showList, filtered.length, compact, useInlineActions]);
 
   // Close when clicking outside (input container OR the portal menu).
   useEffect(() => {
+    if (!isOpen) return;
     const handleClickOutside = (event: MouseEvent) => {
       const t = event.target as Node;
       if (containerRef.current?.contains(t)) return;
       if (menuRef.current?.contains(t)) return;
+      if (externalTriggerRef?.current?.contains(t)) return;
       setIsOpen(false);
       setActiveIdx(-1);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  }, [externalTriggerRef, isOpen, setIsOpen]);
 
   const pick = (id: string) => {
+    if (disabled) return;
     onChange(id);
     // Commit and exit input state: close the list AND drop focus. Switching
     // again is then a single click on the field — a fresh focus that reopens
@@ -120,8 +235,10 @@ export function ModelIdCombobox({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (disabled) return;
     if (!showList) {
       if (e.key === 'ArrowDown' && hasOptions) {
+        if (compact) e.preventDefault();
         setSearching(false);
         setIsOpen(true);
       }
@@ -134,7 +251,7 @@ export function ModelIdCombobox({
       e.preventDefault();
       setActiveIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === 'Enter') {
-      if (activeIdx >= 0) {
+      if (activeIdx >= 0 && activeIdx < filtered.length) {
         e.preventDefault();
         pick(filtered[activeIdx]);
       }
@@ -144,101 +261,206 @@ export function ModelIdCombobox({
     }
   };
 
+  const chevronButton = hasChevron && !compact && (
+    <button
+      type="button"
+      tabIndex={-1}
+      disabled={disabled || !hasOptions}
+      onMouseDown={useInlineActions ? (e) => e.preventDefault() : undefined}
+      onClick={(e) => {
+        if (useInlineActions) e.stopPropagation();
+        if (disabled || !hasOptions) return;
+        setSearching(false);
+        setActiveIdx(-1);
+        setIsOpen(!isOpen);
+      }}
+      aria-label="Toggle model id suggestions"
+      className={`${useInlineActions ? 'shrink-0' : 'absolute right-1.5 top-1/2 -translate-y-1/2'} text-cyber-text-muted hover:text-cyber-text`}
+    >
+      <ChevronDown size={14} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+    </button>
+  );
+  const refreshButton = onRefresh && (
+    <button
+      type="button"
+      disabled={disabled || refreshing}
+      aria-label={refreshLabel}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!disabled && !refreshing) onRefresh();
+      }}
+      className={`${useInlineActions ? 'shrink-0' : `absolute ${hasChevron ? 'right-7' : 'right-1.5'} top-1/2 -translate-y-1/2`} text-cyber-text-muted hover:text-cyber-text disabled:opacity-50`}
+    >
+      <RefreshCw size={14} className={refreshing ? 'animate-spin' : undefined} />
+    </button>
+  );
+  const pasteButton = onPaste && pasteLabel && (useInlineActions || !hasChevron) && (
+    <button
+      type="button"
+      tabIndex={-1}
+      disabled={disabled}
+      onMouseDown={useInlineActions ? (e) => e.preventDefault() : undefined}
+      onClick={(e) => {
+        if (useInlineActions) e.stopPropagation();
+        if (!disabled) onPaste();
+      }}
+      className={`${useInlineActions ? 'shrink-0' : `absolute ${onRefresh ? 'right-8' : 'right-2'} top-1/2 -translate-y-1/2`} text-xs text-cyber-text-secondary`}
+    >
+      {pasteLabel}
+    </button>
+  );
+
   return (
-    <div ref={containerRef} className="relative">
-      <input
-        ref={inputRef}
-        type="text"
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value);
-          setIsOpen(true);
-          setSearching(true);
-          setActiveIdx(-1);
-        }}
-        onFocus={() => {
-          if (hasOptions) {
-            setIsOpen(true);
-            setSearching(false);
-            setActiveIdx(-1);
-          }
-        }}
-        // Clicking the input always (re)opens the list — even when it already
-        // has focus (where onFocus won't fire again), so a closed list is
-        // never stuck shut.
-        onClick={() => {
-          if (hasOptions) setIsOpen(true);
-        }}
-        onKeyDown={handleKeyDown}
-        // The chevron and the paste affordance are mutually exclusive: when
-        // the directory carries model-id options the field is a picker (chevron
-        // flush-right at right-1.5, pr-8), so the user selects from the menu;
-        // when there are no options it's a plain free-text input and the paste
-        // label shows flush-right at right-2 (pr-16 — wide enough for the
-        // longest locale's "貼り付け") instead.
-        className={`w-full bg-cyber-input border border-cyber-border ${hasOptions ? 'pr-8' : onPaste ? 'pr-16' : ''} px-2 py-1.5 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button`}
-      />
-      {hasOptions && (
+    <div
+      ref={containerRef}
+      className={
+        compact
+          ? 'relative flex min-w-0'
+          : useInlineActions
+            ? 'relative flex items-center w-full min-w-0 bg-cyber-input border border-cyber-border rounded-button'
+            : 'relative'
+      }
+    >
+      {compact ? (
         <button
-          type="button"
-          tabIndex={-1}
-          onClick={() => {
-            setSearching(false);
-            setActiveIdx(-1);
-            setIsOpen((o) => !o);
+          ref={(node) => {
+            inputRef.current = node;
           }}
-          aria-label="Toggle model id suggestions"
-          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-cyber-text-muted hover:text-cyber-text"
-        >
-          <ChevronDown size={14} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-        </button>
-      )}
-      {onPaste && pasteLabel && !hasOptions && (
-        <button
           type="button"
-          tabIndex={-1}
-          onClick={onPaste}
-          className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-xs text-cyber-text-secondary"
+          disabled={disabled || !hasOptions}
+          aria-label={ariaLabel}
+          aria-expanded={showList}
+          onClick={() => {
+            if (disabled || !hasOptions) return;
+            setSearching(false);
+            setActiveIdx(-1);
+            setIsOpen(!isOpen);
+          }}
+          onKeyDown={handleKeyDown}
+          className="inline-flex min-w-0 max-w-full items-center gap-1 text-left text-xs text-cyber-text-secondary hover:text-cyber-text disabled:opacity-50 focus-visible:outline focus-visible:outline-1 focus-visible:outline-cyber-accent"
         >
-          {pasteLabel}
+          <span className="min-w-0 truncate">{label(value) || placeholder}</span>
+          <ChevronDown
+            size={12}
+            className={`shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          />
         </button>
+      ) : (
+        <input
+          ref={(node) => {
+            inputRef.current = node;
+          }}
+          type="text"
+          placeholder={placeholder}
+          value={label(value)}
+          readOnly={selectOnly}
+          style={selectOnly ? { cursor: 'default' } : undefined}
+          disabled={disabled}
+          aria-label={ariaLabel}
+          onChange={(e) => {
+            if (selectOnly || disabled) return;
+            onChange(e.target.value);
+            setIsOpen(true);
+            setSearching(true);
+            setActiveIdx(-1);
+          }}
+          onFocus={() => {
+            if (!disabled && hasOptions) {
+              setIsOpen(true);
+              setSearching(false);
+              setActiveIdx(-1);
+            }
+          }}
+          // Clicking the input always (re)opens the list — even when it already
+          // has focus (where onFocus won't fire again), so a closed list is
+          // never stuck shut.
+          onClick={() => {
+            if (!disabled && hasOptions) setIsOpen(true);
+          }}
+          onKeyDown={handleKeyDown}
+          // Reserve space for the field's actions; paste is shown only for free text.
+          className={`${useInlineActions ? 'min-w-0 flex-1 bg-transparent' : `w-full bg-cyber-input border border-cyber-border ${padding}`} px-2 py-1.5 text-xs text-cyber-text font-mono focus:border-cyber-border focus:outline-none rounded-button`}
+        />
+      )}
+      {useInlineActions ? (
+        <div className="flex items-center gap-2 shrink-0 pr-2">
+          {actionHint && (
+            <span className="text-xs text-cyber-text-muted whitespace-nowrap">{actionHint}</span>
+          )}
+          {refreshButton}
+          {pasteButton}
+          {chevronButton}
+        </div>
+      ) : (
+        <>
+          {chevronButton}
+          {refreshButton}
+          {pasteButton}
+        </>
       )}
       {showList &&
         menuPos &&
         createPortal(
           <div
             ref={menuRef}
-            style={{
-              position: 'fixed',
-              left: menuPos.left,
-              width: menuPos.width,
-              top: menuPos.dropUp ? undefined : menuPos.below,
-              bottom: menuPos.dropUp ? menuPos.above : undefined,
-              maxHeight: menuPos.maxHeight,
-            }}
-            className="overflow-y-auto z-[1000] bg-cyber-elevated border border-cyber-border/60 rounded-button shadow-lg"
+            style={
+              {
+                position: 'fixed',
+                left: menuPos.left,
+                width: compact ? 'max-content' : menuPos.width,
+                minWidth: compact ? `min(${menuPos.width}px, calc(100vw - 16px))` : undefined,
+                maxWidth: compact ? 'calc(100vw - 16px)' : undefined,
+                top: menuPos.dropUp ? undefined : menuPos.below,
+                bottom: menuPos.dropUp ? menuPos.above : undefined,
+                maxHeight: menuPos.maxHeight,
+                transformOrigin: compact ? (menuPos.dropUp ? 'bottom' : 'top') : undefined,
+                '--model-menu-left': compact ? `${menuPos.left}px` : undefined,
+              } as React.CSSProperties
+            }
+            className={`overflow-y-auto z-[9999] bg-cyber-surface border border-cyber-border/60 rounded-button shadow-lg cursor-default ${compact ? `model-id-combobox-menu${menuPos.dropUp ? ' is-drop-up' : ''}` : ''}`}
           >
-            {filtered.map((opt, idx) => (
-              <div
-                key={opt}
-                // mousedown (not click) so selection fires before the input blurs.
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pick(opt);
-                }}
-                onMouseEnter={() => setActiveIdx(idx)}
-                className={`px-2 py-1.5 cursor-pointer text-xs font-mono truncate transition-colors ${
-                  opt === value
-                    ? 'bg-cyber-text/15 text-cyber-text'
-                    : idx === activeIdx
-                      ? 'bg-cyber-text/10 text-cyber-text'
-                      : 'text-cyber-text hover:bg-cyber-text/10'
-                }`}
-              >
-                {opt}
-              </div>
-            ))}
+            {filtered.map((opt, idx) => {
+              const free = freeIds.has(opt);
+              const multiplier = optionMultipliers?.[opt];
+              const hasMultiplier =
+                !free &&
+                typeof multiplier === 'number' &&
+                Number.isFinite(multiplier) &&
+                multiplier > 0;
+              return (
+                <div
+                  key={opt}
+                  // mousedown (not click) so selection fires before the input blurs.
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    e.preventDefault();
+                    pick(opt);
+                  }}
+                  onMouseEnter={() => setActiveIdx(idx)}
+                  className={`px-2 py-1.5 text-xs font-mono transition-colors ${free || hasMultiplier ? 'flex items-center gap-2' : 'truncate'} ${
+                    opt === value
+                      ? 'bg-cyber-text/15 text-cyber-text'
+                      : idx === activeIdx
+                        ? 'bg-cyber-text/10 text-cyber-text'
+                        : 'text-cyber-text hover:bg-cyber-text/10'
+                  }`}
+                >
+                  {free || hasMultiplier ? (
+                    <>
+                      <span className="min-w-0 truncate">{label(opt)}</span>
+                      <span
+                        className={`shrink-0 font-sans ${free ? 'text-cyber-accent' : 'text-cyber-text-muted'}`}
+                      >
+                        {free ? freeLabel : `${multiplier}×`}
+                      </span>
+                    </>
+                  ) : (
+                    label(opt)
+                  )}
+                </div>
+              );
+            })}
           </div>,
           document.body
         )}

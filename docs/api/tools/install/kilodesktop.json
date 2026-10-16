@@ -1,0 +1,27 @@
+{
+    "id": "kilodesktop",
+    "displayName": "Kilo Desktop",
+    "homepage": "https://kilo.ai/install",
+    "docs": "https://kilo.ai/docs/desktop/installation",
+    "kind": "desktop_app",
+    "platforms": ["windows", "macos", "linux"],
+    "install": {
+        "windows_download": "Open https://kilo.ai/install and select the Windows x64 or ARM64 .exe matching this machine. Save it to the user's Downloads directory and open the installer.",
+        "macos_download": "Open https://kilo.ai/install and download the Apple Silicon .dmg. Kilo Desktop currently has no official Intel macOS download. Open the disk image and let the user install Kilo.app.",
+        "linux_download": "Open https://kilo.ai/install and download the x64 or ARM64 .deb matching this machine. Install the downloaded Debian package using the system package installer.",
+        "note": "Official Kilo Desktop by Anaconda. Its executable is kilo-desktop, with a bundled Kilo CLI. Gateway accounts share the Kilo auth store, while Desktop model preferences are separate from CLI defaults. Do not install Kiro or OpenCode as a substitute."
+    },
+    "install_flow": {
+        "summary": "Detect platform/architecture, download the matching official installer, open it, and verify Kilo Desktop is detected.",
+        "agent_steps": [
+            "Detect OS and CPU architecture first.",
+            "Select the matching download from https://kilo.ai/install. For an Intel Mac, report that no official Desktop package is available; the Kilo CLI remains available.",
+            "Save the installer to Downloads and tell the user its exact full path.",
+            "Open the installer with Start-Process on Windows or open on macOS; use the package installer for the Linux .deb.",
+            "Let the user finish the native installation, then refresh detection. Do not automate installer GUI steps."
+        ],
+        "tell_user": ["The exact download path", "How to finish the native installer", "Kilo Desktop and Kilo CLI share login credentials but use separate model preferences"]
+    },
+    "first_run": {"description": "Launch Kilo Desktop and sign in to the Kilo Gateway account, or add a custom AI provider in AI settings.", "verify": "Launch the detected kilo-desktop executable"},
+    "network_requirements": {"test_urls": ["https://kilo.ai", "https://api.kilo.ai", "https://autoupdate.desktop.anaconda.com"], "mirrors": {}}
+}

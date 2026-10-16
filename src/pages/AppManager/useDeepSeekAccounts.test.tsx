@@ -127,7 +127,7 @@ describe('DeepSeek account lifecycle', () => {
     await mount();
     const waiting = deferred<api.DeepSeekAccount>();
     vi.mocked(api.refreshDeepSeekAccountQuota).mockReturnValue(waiting.promise);
-    let refresh!: Promise<void>;
+    let refresh!: Promise<unknown>;
     act(() => {
       refresh = state.refresh(account);
     });

@@ -18,6 +18,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest_eventsource::{Event, EventSource};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -40,13 +41,39 @@ pub struct LlmConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LlmProvider {
     OpenAI,
     Anthropic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThinkingOrigin {
+    pub provider: LlmProvider,
+    pub endpoint: String,
+    pub model: String,
+}
+
+impl ThinkingOrigin {
+    fn from_config(config: &LlmConfig) -> Self {
+        let base = config.base_url.trim().trim_end_matches('/');
+        let normalized = url::Url::parse(base)
+            .map(|mut url| {
+                url.set_fragment(None);
+                url.to_string().trim_end_matches('/').to_string()
+            })
+            .unwrap_or_else(|_| base.to_string());
+        Self {
+            provider: config.provider,
+            endpoint: hex::encode(Sha256::digest(normalized.as_bytes())),
+            model: config.model.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +118,14 @@ pub enum ContentBlock {
         thinking: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         signature: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<ThinkingOrigin>,
+    },
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking {
+        data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<ThinkingOrigin>,
     },
     #[serde(rename = "tool_use")]
     ToolUse {
@@ -109,10 +144,14 @@ pub enum ContentBlock {
 #[derive(Debug, Clone)]
 pub enum LlmEvent {
     TextDelta(String),
+    ThinkingBlockStart {
+        thinking: String,
+        signature: String,
+    },
+    RedactedThinking(String),
     Thinking(String),
-    /// Anthropic streams the thinking block's signature as a separate
-    /// `signature_delta`. We accumulate it alongside `Thinking` text and
-    /// pin it to the saved assistant message so the next turn validates.
+    /// Anthropic's `signature_delta` carries the current block's full signature.
+    /// Replace that block's signature rather than concatenate snapshots.
     ThinkingSignature(String),
     ToolCallStart {
         id: String,
@@ -147,6 +186,16 @@ impl LlmClient {
             .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
         Ok(Self { config, http })
+    }
+
+    pub fn thinking_origin(&self) -> ThinkingOrigin {
+        ThinkingOrigin::from_config(&self.config)
+    }
+
+    pub fn summary_client(&self) -> Self {
+        let mut client = self.clone();
+        client.config.reasoning_effort = None;
+        client
     }
 
     /// Stream a chat completion with tool support.
@@ -184,9 +233,7 @@ impl LlmClient {
 
         // Build messages array with system prompt
         let mut msgs = vec![json!({"role": "system", "content": system_prompt})];
-        for m in messages {
-            msgs.push(message_to_openai_json(m));
-        }
+        msgs.extend(messages_to_openai_json(messages, &self.config));
 
         // Build tools array
         let tools_json: Vec<Value> = tools
@@ -211,6 +258,7 @@ impl LlmClient {
         if !tools_json.is_empty() {
             body["tools"] = json!(tools_json);
         }
+        super::reasoning_effort::apply(&mut body, &self.config)?;
 
         // Pre-validate the Authorization header so we don't burn retry
         // attempts on a request that can never succeed.
@@ -266,19 +314,27 @@ impl LlmClient {
             // events. Stalled upstream → emit Error + break instead of
             // hanging until the 10-minute global timeout.
             loop {
+                if tx.is_closed() {
+                    es.close();
+                    break;
+                }
                 let event = if let Some(buffered) = events.pop_front() {
                     Some(buffered)
                 } else {
-                    match tokio::time::timeout(SSE_CHUNK_TIMEOUT, es.next()).await {
-                        Ok(maybe_event) => maybe_event,
-                        Err(_) => {
-                            let _ = tx
-                                .send(LlmEvent::Error(format!(
+                    tokio::select! {
+                        _ = tx.closed() => {
+                            es.close();
+                            None
+                        }
+                        event = tokio::time::timeout(SSE_CHUNK_TIMEOUT, es.next()) => match event {
+                            Ok(maybe_event) => maybe_event,
+                            Err(_) => {
+                                let _ = tx.send(LlmEvent::Error(format!(
                                     "Upstream stream stalled (no data for {}s)",
                                     SSE_CHUNK_TIMEOUT.as_secs()
-                                )))
-                                .await;
-                            break;
+                                ))).await;
+                                None
+                            }
                         }
                     }
                 };
@@ -447,8 +503,7 @@ impl LlmClient {
         // user{tool_result} messages collapse into one — required by the
         // Anthropic API's tool_use↔tool_result pairing rule, see
         // `normalize_anthropic_messages`.
-        let normalized = normalize_anthropic_messages(messages);
-        let msgs: Vec<Value> = normalized.iter().map(message_to_anthropic_json).collect();
+        let msgs = messages_to_anthropic_json(messages, &self.config);
 
         // Build tools
         let tools_json: Vec<Value> = tools
@@ -472,6 +527,7 @@ impl LlmClient {
         if !tools_json.is_empty() {
             body["tools"] = json!(tools_json);
         }
+        super::reasoning_effort::apply(&mut body, &self.config)?;
 
         // Pre-validate the api-key header so we don't burn retry
         // attempts on a request that can never succeed.
@@ -518,19 +574,27 @@ impl LlmClient {
                 pending.into_iter().map(Ok).collect();
 
             loop {
+                if tx.is_closed() {
+                    es.close();
+                    break;
+                }
                 let event = if let Some(buffered) = events.pop_front() {
                     Some(buffered)
                 } else {
-                    match tokio::time::timeout(SSE_CHUNK_TIMEOUT, es.next()).await {
-                        Ok(maybe_event) => maybe_event,
-                        Err(_) => {
-                            let _ = tx
-                                .send(LlmEvent::Error(format!(
+                    tokio::select! {
+                        _ = tx.closed() => {
+                            es.close();
+                            None
+                        }
+                        event = tokio::time::timeout(SSE_CHUNK_TIMEOUT, es.next()) => match event {
+                            Ok(maybe_event) => maybe_event,
+                            Err(_) => {
+                                let _ = tx.send(LlmEvent::Error(format!(
                                     "Upstream stream stalled (no data for {}s)",
                                     SSE_CHUNK_TIMEOUT.as_secs()
-                                )))
-                                .await;
-                            break;
+                                ))).await;
+                                None
+                            }
                         }
                     }
                 };
@@ -558,7 +622,27 @@ impl LlmClient {
                                                     .await;
                                             }
                                             Some("thinking") => {
-                                                // Anthropic extended thinking block start
+                                                let _ = tx
+                                                    .send(LlmEvent::ThinkingBlockStart {
+                                                        thinking: block["thinking"]
+                                                            .as_str()
+                                                            .unwrap_or("")
+                                                            .to_string(),
+                                                        signature: block["signature"]
+                                                            .as_str()
+                                                            .unwrap_or("")
+                                                            .to_string(),
+                                                    })
+                                                    .await;
+                                            }
+                                            Some("redacted_thinking") => {
+                                                if let Some(data) = block["data"].as_str() {
+                                                    let _ = tx
+                                                        .send(LlmEvent::RedactedThinking(
+                                                            data.to_string(),
+                                                        ))
+                                                        .await;
+                                                }
                                             }
                                             _ => {}
                                         }
@@ -682,37 +766,138 @@ impl LlmClient {
 
 // ── Helpers ──
 
+fn uses_deepseek_history(config: &LlmConfig) -> bool {
+    matches!(
+        config.model.trim().to_ascii_lowercase().as_str(),
+        "deepseek-flash" | "deepseek-v4-pro" | "deepseek-v4-flash" | "deepseek-v4.1-flash"
+    ) || url::Url::parse(&config.base_url)
+        .is_ok_and(|endpoint| endpoint.host_str() == Some("api.deepseek.com"))
+}
+
+/// Project reasoning for this request without changing saved conversation history.
+fn compatible_history(messages: &[Message], config: &LlmConfig) -> Vec<Message> {
+    let target = ThinkingOrigin::from_config(config);
+    let result_ids: std::collections::HashSet<&str> = messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            MessageContent::Blocks(blocks) => Some(blocks),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    messages
+        .iter()
+        .filter_map(|message| {
+            let mut projected = message.clone();
+            if message.role == "assistant" {
+                if let MessageContent::Blocks(blocks) = &mut projected.content {
+                    blocks.retain(|block| match block {
+                        ContentBlock::Thinking {
+                            signature, origin, ..
+                        } => match origin {
+                            Some(origin) => origin == &target,
+                            None => match config.provider {
+                                LlmProvider::OpenAI => signature.is_empty(),
+                                LlmProvider::Anthropic => {
+                                    !signature.is_empty() || uses_deepseek_history(config)
+                                }
+                            },
+                        },
+                        ContentBlock::RedactedThinking { origin, .. } => {
+                            config.provider == LlmProvider::Anthropic
+                                && !uses_deepseek_history(config)
+                                && origin.as_ref().map_or(true, |origin| origin == &target)
+                        }
+                        _ => true,
+                    });
+                    if uses_deepseek_history(config)
+                        && !blocks.iter().any(|block| matches!(block, ContentBlock::Thinking { .. }))
+                        && blocks.iter().any(|block| matches!(block, ContentBlock::ToolUse { id, .. } if result_ids.contains(id.as_str())))
+                    {
+                        // A completed tool turn imported from another model has no
+                        // local reasoning. Keep the required carrier request-local.
+                        blocks.insert(0, ContentBlock::Thinking {
+                            thinking: String::new(),
+                            signature: String::new(),
+                            origin: Some(target.clone()),
+                        });
+                    }
+                    if blocks.is_empty() {
+                        return None;
+                    }
+                }
+            }
+            Some(projected)
+        })
+        .collect()
+}
+
+fn messages_to_openai_json(messages: &[Message], config: &LlmConfig) -> Vec<Value> {
+    let mut out = Vec::new();
+    for message in compatible_history(messages, config) {
+        if message.role == "user" || message.role == "tool" {
+            if let MessageContent::Blocks(blocks) = &message.content {
+                if blocks
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+                {
+                    // One OpenAI tool message per result, including batched results
+                    // saved by a different protocol. Keep ordinary user text too.
+                    for block in blocks {
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                        } = block
+                        {
+                            out.push(json!({
+                                "role": "tool", "tool_call_id": tool_use_id,
+                                "content": content
+                            }));
+                        }
+                    }
+                    let text: Vec<&str> = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !text.is_empty() {
+                        out.push(json!({"role":"user", "content":text.join("")}));
+                    }
+                    continue;
+                }
+            }
+        }
+        let mut serialized = message_to_openai_json(&message);
+        if message.role == "assistant"
+            && uses_deepseek_history(config)
+            && serialized.get("reasoning_content").is_none()
+        {
+            // DeepSeek requires a reasoning field on every prior assistant reply
+            // when tools are sent, including final replies imported from another model.
+            serialized["reasoning_content"] = json!("");
+        }
+        out.push(serialized);
+    }
+    out
+}
+
+fn messages_to_anthropic_json(messages: &[Message], config: &LlmConfig) -> Vec<Value> {
+    normalize_anthropic_messages(&compatible_history(messages, config))
+        .iter()
+        .map(message_to_anthropic_json)
+        .collect()
+}
+
 fn message_to_openai_json(m: &Message) -> Value {
     match &m.content {
         MessageContent::Text(text) => json!({"role": m.role, "content": text}),
         MessageContent::Blocks(blocks) => {
-            // For tool results in OpenAI format
-            if (m.role == "tool" || m.role == "user") && blocks.len() == 1 {
-                if let Some(ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                }) = blocks.first()
-                {
-                    return json!({
-                        "role": "tool",
-                        "tool_call_id": tool_use_id,
-                        "content": content,
-                    });
-                }
-            }
-            if m.role == "tool" {
-                if let Some(ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                }) = blocks.first()
-                {
-                    return json!({
-                        "role": "tool",
-                        "tool_call_id": tool_use_id,
-                        "content": content,
-                    });
-                }
-            }
             // For assistant messages with tool calls
             if m.role == "assistant" {
                 let mut tool_calls = Vec::new();
@@ -990,7 +1175,7 @@ where
     Err(last_err)
 }
 
-/// Merge consecutive `user` messages whose content is *only* `tool_result`
+/// Merge consecutive `user` or `tool` messages whose content is *only* `tool_result`
 /// blocks into a single user message. Anthropic's Messages API requires
 /// that every `tool_use` from the prior assistant turn has its matching
 /// `tool_result` in the *immediately following* user message — splitting
@@ -1006,8 +1191,8 @@ where
 /// non-user messages pass through unchanged. Order within the merged
 /// block list is preserved.
 fn normalize_anthropic_messages(messages: &[Message]) -> Vec<Message> {
-    fn is_pure_tool_result_user(m: &Message) -> bool {
-        if m.role != "user" {
+    fn is_pure_tool_result(m: &Message) -> bool {
+        if m.role != "user" && m.role != "tool" {
             return false;
         }
         match &m.content {
@@ -1024,10 +1209,10 @@ fn normalize_anthropic_messages(messages: &[Message]) -> Vec<Message> {
     let mut out: Vec<Message> = Vec::with_capacity(messages.len());
     let mut i = 0;
     while i < messages.len() {
-        if is_pure_tool_result_user(&messages[i]) {
+        if is_pure_tool_result(&messages[i]) {
             // Walk forward collecting every consecutive pure-tool_result user.
             let mut merged_blocks: Vec<ContentBlock> = Vec::new();
-            while i < messages.len() && is_pure_tool_result_user(&messages[i]) {
+            while i < messages.len() && is_pure_tool_result(&messages[i]) {
                 if let MessageContent::Blocks(blocks) = &messages[i].content {
                     merged_blocks.extend(blocks.iter().cloned());
                 }
@@ -1046,8 +1231,9 @@ fn normalize_anthropic_messages(messages: &[Message]) -> Vec<Message> {
 }
 
 fn message_to_anthropic_json(m: &Message) -> Value {
+    let role = if m.role == "tool" { "user" } else { &m.role };
     match &m.content {
-        MessageContent::Text(text) => json!({"role": m.role, "content": text}),
+        MessageContent::Text(text) => json!({"role": role, "content": text}),
         MessageContent::Blocks(blocks) => {
             let content: Vec<Value> = blocks
                 .iter()
@@ -1056,14 +1242,14 @@ fn message_to_anthropic_json(m: &Message) -> Value {
                     ContentBlock::Thinking {
                         thinking,
                         signature,
+                        ..
                     } => {
                         // Anthropic-compat thinking-mode endpoints (e.g. DeepSeek's
                         // /anthropic) require both fields on round-trip or 400.
-                        let mut block = json!({"type": "thinking", "thinking": thinking});
-                        if !signature.is_empty() {
-                            block["signature"] = json!(signature);
-                        }
-                        block
+                        json!({"type": "thinking", "thinking": thinking, "signature": signature})
+                    }
+                    ContentBlock::RedactedThinking { data, .. } => {
+                        json!({"type": "redacted_thinking", "data": data})
                     }
                     ContentBlock::ToolUse { id, name, input } => json!({
                         "type": "tool_use", "id": id, "name": name, "input": input
@@ -1076,7 +1262,7 @@ fn message_to_anthropic_json(m: &Message) -> Value {
                     }),
                 })
                 .collect();
-            json!({"role": m.role, "content": content})
+            json!({"role": role, "content": content})
         }
     }
 }
@@ -1085,6 +1271,716 @@ fn message_to_anthropic_json(m: &Message) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn protocol_config(provider: LlmProvider) -> LlmConfig {
+        LlmConfig {
+            provider,
+            base_url: "https://fixture.invalid/v1".into(),
+            api_key: "fixture-key".into(),
+            model: "fixture-model".into(),
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn protocol_switch_preserves_batched_results_and_user_text_for_openai() {
+        let mut result = tool_result_msg(&["a", "b"]);
+        if let MessageContent::Blocks(blocks) = &mut result.content {
+            blocks.push(ContentBlock::Text {
+                text: "Continue with the saved results".into(),
+            });
+        }
+        let input = vec![assistant_with_tool_uses(&["a", "b"]), result];
+        let before = serde_json::to_value(&input).unwrap();
+        let projected = messages_to_openai_json(&input, &protocol_config(LlmProvider::OpenAI));
+        assert_eq!(projected.len(), 4);
+        assert_eq!(projected[1]["tool_call_id"], "a");
+        assert_eq!(projected[2]["tool_call_id"], "b");
+        assert_eq!(projected[3]["role"], "user");
+        assert_eq!(projected[3]["content"], "Continue with the saved results");
+        assert_eq!(serde_json::to_value(&input).unwrap(), before);
+    }
+
+    #[test]
+    fn protocol_switch_keeps_reasoning_only_for_its_original_model_and_endpoint() {
+        for provider in [LlmProvider::OpenAI, LlmProvider::Anthropic] {
+            let config = protocol_config(provider);
+            let signature = if provider == LlmProvider::Anthropic {
+                "opaque-signature"
+            } else {
+                ""
+            };
+            let mut input = vec![Message {
+                role: "assistant".into(),
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Thinking {
+                        thinking: "private reasoning".into(),
+                        signature: signature.into(),
+                        origin: Some(ThinkingOrigin::from_config(&config)),
+                    },
+                    ContentBlock::Text {
+                        text: "answer".into(),
+                    },
+                ]),
+            }];
+            if provider == LlmProvider::Anthropic {
+                if let MessageContent::Blocks(blocks) = &mut input[0].content {
+                    blocks.insert(
+                        1,
+                        ContentBlock::RedactedThinking {
+                            data: "opaque-fixture".into(),
+                            origin: Some(ThinkingOrigin::from_config(&config)),
+                        },
+                    );
+                }
+            }
+            let before = serde_json::to_value(&input).unwrap();
+            let replayed = compatible_history(&input, &config);
+            assert_eq!(serde_json::to_value(&replayed).unwrap(), before);
+            let mut changed = config.clone();
+            for change in ["provider", "endpoint", "model"] {
+                changed.clone_from(&config);
+                match change {
+                    "provider" => {
+                        changed.provider = if provider == LlmProvider::OpenAI {
+                            LlmProvider::Anthropic
+                        } else {
+                            LlmProvider::OpenAI
+                        }
+                    }
+                    "endpoint" => changed.base_url = "https://other.invalid/v1".into(),
+                    "model" => changed.model = "other-model".into(),
+                    _ => unreachable!(),
+                }
+                let projected = compatible_history(&input, &changed);
+                if let MessageContent::Blocks(blocks) = &projected[0].content {
+                    assert_eq!(blocks.len(), 1);
+                    assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "answer"));
+                } else {
+                    panic!("text must survive incompatible reasoning");
+                }
+            }
+            assert_eq!(serde_json::to_value(&input).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn protocol_switch_loads_legacy_reasoning_and_omits_foreign_reasoning_only_turns() {
+        let legacy: Message = serde_json::from_value(json!({
+            "role":"assistant", "content":[{
+                "type":"thinking", "thinking":"legacy reasoning", "signature":""
+            }]
+        }))
+        .unwrap();
+        let input = vec![legacy];
+        assert_eq!(
+            compatible_history(&input, &protocol_config(LlmProvider::OpenAI)).len(),
+            1
+        );
+        assert!(
+            messages_to_anthropic_json(&input, &protocol_config(LlmProvider::Anthropic)).is_empty()
+        );
+        let mut compatible = protocol_config(LlmProvider::Anthropic);
+        compatible.model = "deepseek-v4-pro".into();
+        let projected = messages_to_anthropic_json(&input, &compatible);
+        assert_eq!(projected[0]["content"][0]["signature"], "");
+    }
+
+    #[test]
+    fn legacy_redacted_reasoning_survives_native_replay_without_entering_other_protocols() {
+        let input: Vec<Message> = serde_json::from_value(json!([{
+            "role":"assistant", "content":[
+                {"type":"redacted_thinking", "data":"opaque-legacy-fixture"},
+                {"type":"text", "text":"visible answer"}
+            ]
+        }]))
+        .unwrap();
+        let before = serde_json::to_value(&input).unwrap();
+        let config = protocol_config(LlmProvider::Anthropic);
+        let replay = compatible_history(&input, &config);
+        assert_eq!(message_to_anthropic_json(&replay[0]), before[0]);
+        let mut deepseek = config.clone();
+        deepseek.model = "deepseek-v4-pro".into();
+        for config in [protocol_config(LlmProvider::OpenAI), deepseek] {
+            let projected = compatible_history(&input, &config);
+            assert_eq!(
+                serde_json::to_value(&projected).unwrap()[0]["content"],
+                json!([{"type":"text", "text":"visible answer"}])
+            );
+        }
+        assert_eq!(serde_json::to_value(&input).unwrap(), before);
+    }
+
+    #[test]
+    fn thinking_origin_normalizes_endpoint_and_does_not_store_url_credentials() {
+        let mut config = protocol_config(LlmProvider::OpenAI);
+        config.base_url = "https://Fixture.invalid/v1/".into();
+        let normalized = ThinkingOrigin::from_config(&config);
+        assert_eq!(
+            normalized,
+            ThinkingOrigin::from_config(&protocol_config(LlmProvider::OpenAI))
+        );
+        config.base_url = "https://fixture.invalid/v1?api_key=secret".into();
+        let serialized = serde_json::to_string(&ThinkingOrigin::from_config(&config)).unwrap();
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("fixture.invalid"));
+    }
+
+    #[test]
+    fn protocol_switch_adds_deepseek_carrier_only_for_completed_tool_turns() {
+        let source_config = protocol_config(LlmProvider::OpenAI);
+        let mut source = assistant_with_tool_uses(&["a"]);
+        if let MessageContent::Blocks(blocks) = &mut source.content {
+            blocks.insert(
+                0,
+                ContentBlock::Thinking {
+                    thinking: "foreign reasoning".into(),
+                    signature: String::new(),
+                    origin: Some(ThinkingOrigin::from_config(&source_config)),
+                },
+            );
+        }
+        let input = vec![source.clone(), tool_result_msg(&["a"])];
+        let before = serde_json::to_value(&input).unwrap();
+        for provider in [LlmProvider::OpenAI, LlmProvider::Anthropic] {
+            let mut config = protocol_config(provider);
+            config.model = "deepseek-v4-pro".into();
+            let projected = if provider == LlmProvider::OpenAI {
+                messages_to_openai_json(&input, &config)
+            } else {
+                messages_to_anthropic_json(&input, &config)
+            };
+            if provider == LlmProvider::OpenAI {
+                assert_eq!(projected[0]["reasoning_content"], "");
+                assert_eq!(projected[0]["tool_calls"][0]["id"], "a");
+            } else {
+                assert_eq!(
+                    projected[0]["content"][0],
+                    json!({"type":"thinking", "thinking":"", "signature":""})
+                );
+                assert_eq!(projected[0]["content"][1]["id"], "a");
+            }
+            assert!(!projected[0].to_string().contains("foreign reasoning"));
+            let without_results = compatible_history(&[source.clone()], &config);
+            if let MessageContent::Blocks(blocks) = &without_results[0].content {
+                assert!(blocks
+                    .iter()
+                    .all(|block| !matches!(block, ContentBlock::Thinking { .. })));
+            } else {
+                panic!("tool uses remain blocks");
+            }
+            for unsupported in ["unknown", "deepseek-unrecognized", "claude-opus-4-6"] {
+                config.model = unsupported.into();
+                let projected = compatible_history(&input, &config);
+                if let MessageContent::Blocks(blocks) = &projected[0].content {
+                    assert!(blocks
+                        .iter()
+                        .all(|block| !matches!(block, ContentBlock::Thinking { .. })));
+                }
+            }
+        }
+        assert_eq!(serde_json::to_value(&input).unwrap(), before);
+    }
+
+    #[test]
+    fn summary_client_keeps_model_and_transport_without_explicit_reasoning_effort() {
+        let mut config = protocol_config(LlmProvider::OpenAI);
+        config.reasoning_effort = Some("high".into());
+        let client = LlmClient::new(config).unwrap();
+        let summary = client.summary_client();
+        assert_eq!(summary.thinking_origin(), client.thinking_origin());
+        assert!(summary.config.reasoning_effort.is_none());
+        assert_eq!(client.config.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[tokio::test]
+    async fn abandoned_receiver_closes_stalled_upstream_for_both_protocols() {
+        use axum::{body::Body, extract::State, response::Response, routing::post, Json, Router};
+        use bytes::Bytes;
+        use std::convert::Infallible;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        async fn stalled(
+            State(disconnected): State<mpsc::UnboundedSender<bool>>,
+            Json(body): Json<Value>,
+        ) -> Response {
+            let anthropic = body.get("system").is_some();
+            let data = if anthropic {
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"started\"}}\n\n"
+            } else {
+                "data: {\"choices\":[{\"delta\":{\"content\":\"started\"}}]}\n\n"
+            };
+            let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(1);
+            tx.send(Ok(Bytes::from_static(data.as_bytes())))
+                .await
+                .unwrap();
+            tokio::spawn(async move {
+                tx.closed().await;
+                let _ = disconnected.send(anthropic);
+            });
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(ReceiverStream::new(rx)))
+                .unwrap()
+        }
+
+        let (tx, mut disconnected) = mpsc::unbounded_channel();
+        let router = Router::new()
+            .route("/v1/chat/completions", post(stalled))
+            .route("/v1/messages", post(stalled))
+            .with_state(tx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        for provider in [LlmProvider::OpenAI, LlmProvider::Anthropic] {
+            let mut config = protocol_config(provider);
+            config.base_url.clone_from(&base_url);
+            let client = LlmClient::new(config).unwrap();
+            let mut events = client
+                .chat_stream(&[], &[], "fixture system")
+                .await
+                .unwrap();
+            let first = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .unwrap();
+            assert!(matches!(first, Some(LlmEvent::TextDelta(text)) if text == "started"));
+            // Positive control: the server remains live while the consumer exists.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), disconnected.recv())
+                    .await
+                    .is_err()
+            );
+            drop(events);
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), disconnected.recv())
+                    .await
+                    .unwrap(),
+                Some(provider == LlmProvider::Anthropic)
+            );
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn protocol_switch_preserves_live_and_reloaded_history_over_http() {
+        use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        async fn capture(
+            State((tx, sequence)): State<(mpsc::UnboundedSender<Value>, Arc<AtomicUsize>)>,
+            Json(body): Json<Value>,
+        ) -> axum::response::Response {
+            let anthropic = body.get("system").is_some();
+            tx.send(body.clone()).unwrap();
+            let messages = body["messages"].as_array().unwrap();
+            let missing_reasoning = !anthropic
+                && body["model"] == "deepseek-v4-pro"
+                && body["tools"]
+                    .as_array()
+                    .is_some_and(|tools| !tools.is_empty())
+                && messages.iter().any(|message| {
+                    message["role"] == "assistant"
+                        && message["reasoning_content"].as_str().is_none()
+                });
+            let valid = messages.iter().all(|message| {
+                if anthropic {
+                    matches!(message["role"].as_str(), Some("user" | "assistant"))
+                        && message["content"].as_array().map_or(true, |blocks| {
+                            blocks.iter().all(|block| {
+                                block["type"] != "thinking" || block["signature"].as_str().is_some()
+                            })
+                        })
+                } else {
+                    message["content"].as_array().map_or(true, |blocks| {
+                        blocks.iter().all(|block| block["type"] == "text")
+                    })
+                }
+            });
+            if !valid || missing_reasoning {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error":{"message":if missing_reasoning {
+                            "The reasoning_content in the thinking mode must be passed back to the API."
+                        } else {
+                            "invalid history projection"
+                        }}
+                    })),
+                )
+                    .into_response();
+            }
+            let id = format!("fixture-next-{}", sequence.fetch_add(1, Ordering::Relaxed));
+            let data = if anthropic {
+                [
+                    ("content_block_delta", json!({"type":"content_block_delta", "delta":{"type":"thinking_delta", "thinking":"stream reasoning"}})),
+                    ("content_block_delta", json!({"type":"content_block_delta", "delta":{"type":"signature_delta", "signature":"stream signature"}})),
+                    ("content_block_delta", json!({"type":"content_block_delta", "delta":{"type":"text_delta", "text":"stream answer"}})),
+                    ("content_block_start", json!({"type":"content_block_start", "content_block":{"type":"tool_use", "id":id, "name":"fixture_tool"}})),
+                    ("content_block_delta", json!({"type":"content_block_delta", "delta":{"type":"input_json_delta", "partial_json":"{}"}})),
+                    ("content_block_stop", json!({"type":"content_block_stop"})),
+                    ("message_stop", json!({"type":"message_stop"})),
+                ].into_iter().map(|(event, data)| format!("event: {event}\ndata: {data}\n\n")).collect()
+            } else {
+                let chunk = json!({"choices":[{"delta":{
+                    "reasoning_content":"stream reasoning", "content":"stream answer",
+                    "tool_calls":[{"index":0, "id":id, "function":{"name":"fixture_tool", "arguments":"{}"}}]
+                }, "finish_reason":"tool_calls"}]});
+                format!("data: {chunk}\n\ndata: [DONE]\n\n")
+            };
+            ([("content-type", "text/event-stream")], data).into_response()
+        }
+
+        let (tx, mut captured) = mpsc::unbounded_channel();
+        let router = Router::new()
+            .route("/v1/chat/completions", post(capture))
+            .route("/v1/messages", post(capture))
+            .with_state((tx, Arc::new(AtomicUsize::new(0))));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let tools = [ToolDef {
+            name: "fixture_tool".into(),
+            description: "Verify the saved installation".into(),
+            parameters: json!({"type":"object", "properties":{}}),
+        }];
+        for (initial, model) in [
+            (LlmProvider::OpenAI, "fixture-model"),
+            (LlmProvider::Anthropic, "fixture-model"),
+            (LlmProvider::OpenAI, "deepseek-v4-pro"),
+            (LlmProvider::Anthropic, "deepseek-v4-pro"),
+        ] {
+            let mut config = protocol_config(initial);
+            config.base_url.clone_from(&base_url);
+            config.model = model.into();
+            let mut source = assistant_with_tool_uses(&["a", "b"]);
+            if let MessageContent::Blocks(blocks) = &mut source.content {
+                for block in blocks.iter_mut() {
+                    if let ContentBlock::ToolUse { input, .. } = block {
+                        *input = json!({"path":"saved.txt", "server_id":"server-1"});
+                    }
+                }
+                blocks.insert(
+                    0,
+                    ContentBlock::Text {
+                        text: "Checking installation".into(),
+                    },
+                );
+                blocks.insert(
+                    0,
+                    ContentBlock::Thinking {
+                        thinking: "initial reasoning".into(),
+                        signature: if initial == LlmProvider::Anthropic {
+                            "initial signature".into()
+                        } else {
+                            String::new()
+                        },
+                        origin: Some(ThinkingOrigin::from_config(&config)),
+                    },
+                );
+            }
+            let mut messages = vec![
+                Message {
+                    role: "user".into(),
+                    content: MessageContent::Text("Install on the saved server".into()),
+                },
+                source,
+            ];
+            if initial == LlmProvider::OpenAI {
+                for id in ["a", "b"] {
+                    let mut result = tool_result_msg(&[id]);
+                    result.role = "tool".into();
+                    messages.push(result);
+                }
+            } else {
+                messages.push(tool_result_msg(&["a", "b"]));
+            }
+            messages.push(Message {
+                role: "assistant".into(),
+                content: MessageContent::Text("Installation verified".into()),
+            });
+            messages.push(Message {
+                role: "user".into(),
+                content: MessageContent::Text("Check the verified installation".into()),
+            });
+            messages.push(Message {
+                role: "assistant".into(),
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Thinking {
+                        thinking: "final reasoning".into(),
+                        signature: if initial == LlmProvider::Anthropic {
+                            "final signature".into()
+                        } else {
+                            String::new()
+                        },
+                        origin: Some(ThinkingOrigin::from_config(&config)),
+                    },
+                    ContentBlock::Text {
+                        text: "Verification complete".into(),
+                    },
+                ]),
+            });
+            let opposite = if initial == LlmProvider::OpenAI {
+                LlmProvider::Anthropic
+            } else {
+                LlmProvider::OpenAI
+            };
+            for provider in [opposite, initial, opposite, initial] {
+                // Exercise the same persisted canonical format on every continuation.
+                messages =
+                    serde_json::from_value(serde_json::to_value(&messages).unwrap()).unwrap();
+                messages.push(Message {
+                    role: "user".into(),
+                    content: MessageContent::Text("Continue with previous results".into()),
+                });
+                let before = serde_json::to_value(&messages).unwrap();
+                config.provider = provider;
+                let client = LlmClient::new(config.clone()).unwrap();
+                let mut stream = client
+                    .chat_stream(&messages, &tools, "fixture system")
+                    .await
+                    .unwrap();
+                let mut text = String::new();
+                let mut thinking = String::new();
+                let mut signature = String::new();
+                let mut call_id = String::new();
+                while let Some(event) = stream.recv().await {
+                    match event {
+                        LlmEvent::TextDelta(delta) => text.push_str(&delta),
+                        LlmEvent::Thinking(delta) => thinking.push_str(&delta),
+                        LlmEvent::ThinkingSignature(delta) => signature.push_str(&delta),
+                        LlmEvent::ToolCallStart { id, .. } => call_id = id,
+                        LlmEvent::Error(error) => panic!("fixture rejected history: {error}"),
+                        _ => {}
+                    }
+                }
+                assert_eq!(text, "stream answer");
+                assert!(!call_id.is_empty());
+                assert_eq!(serde_json::to_value(&messages).unwrap(), before);
+                let body = captured.recv().await.unwrap();
+                assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+                let serialized = body.to_string();
+                for retained in [
+                    "Install on the saved server",
+                    "Checking installation",
+                    "Installation verified",
+                    "Verification complete",
+                    "result for a",
+                    "result for b",
+                    "Continue with previous results",
+                    "saved.txt",
+                    "server-1",
+                ] {
+                    assert!(serialized.contains(retained), "missing {retained}");
+                }
+                assert!(!serialized.contains("endpoint"));
+                assert_eq!(serialized.contains("final reasoning"), provider == initial);
+                let wire = body["messages"].as_array().unwrap();
+                if provider == LlmProvider::Anthropic {
+                    let results = wire
+                        .iter()
+                        .flat_map(|message| message["content"].as_array().into_iter().flatten())
+                        .filter(|block| block["type"] == "tool_result")
+                        .collect::<Vec<_>>();
+                    assert!(results.iter().any(|block| block["tool_use_id"] == "a"));
+                    assert!(results.iter().any(|block| block["tool_use_id"] == "b"));
+                    let first = wire
+                        .iter()
+                        .find(|message| message["role"] == "assistant")
+                        .unwrap();
+                    let replayed = first["content"].as_array().unwrap().iter().any(|block| {
+                        block["type"] == "thinking" && block["thinking"] == "initial reasoning"
+                    });
+                    assert_eq!(replayed, provider == initial);
+                    if model == "deepseek-v4-pro" && provider != initial {
+                        assert_eq!(
+                            first["content"][0],
+                            json!({"type":"thinking", "thinking":"", "signature":""})
+                        );
+                    }
+                } else {
+                    assert!(wire.iter().any(|message| message["tool_call_id"] == "a"));
+                    assert!(wire.iter().any(|message| message["tool_call_id"] == "b"));
+                    let plain_final = wire
+                        .iter()
+                        .find(|message| message["content"] == "Installation verified")
+                        .unwrap();
+                    if model == "deepseek-v4-pro" {
+                        assert_eq!(plain_final["reasoning_content"], "");
+                    } else {
+                        assert!(plain_final.get("reasoning_content").is_none());
+                    }
+                    let thinking_final = wire
+                        .iter()
+                        .find(|message| message["content"] == "Verification complete")
+                        .unwrap();
+                    if provider == initial {
+                        assert_eq!(thinking_final["reasoning_content"], "final reasoning");
+                    } else if model == "deepseek-v4-pro" {
+                        assert_eq!(thinking_final["reasoning_content"], "");
+                    } else {
+                        assert!(thinking_final.get("reasoning_content").is_none());
+                    }
+                    let first = wire
+                        .iter()
+                        .find(|message| message["role"] == "assistant")
+                        .unwrap();
+                    assert_eq!(
+                        first["reasoning_content"] == "initial reasoning",
+                        provider == initial
+                    );
+                    if model == "deepseek-v4-pro" && provider != initial {
+                        assert_eq!(first["reasoning_content"], "");
+                    }
+                }
+                messages.push(Message {
+                    role: "assistant".into(),
+                    content: MessageContent::Blocks(vec![
+                        ContentBlock::Thinking {
+                            thinking,
+                            signature,
+                            origin: Some(client.thinking_origin()),
+                        },
+                        ContentBlock::Text { text },
+                        ContentBlock::ToolUse {
+                            id: call_id.clone(),
+                            name: "fixture_tool".into(),
+                            input: json!({}),
+                        },
+                    ]),
+                });
+                messages.push(Message {
+                    role: if provider == LlmProvider::OpenAI {
+                        "tool".into()
+                    } else {
+                        "user".into()
+                    },
+                    content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                        tool_use_id: call_id,
+                        content: "stream result".into(),
+                    }]),
+                });
+            }
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn reasoning_reaches_http_on_each_tool_loop_call_and_default_stays_unchanged() {
+        use axum::{extract::State, routing::post, Json, Router};
+        use tokio::sync::mpsc;
+
+        async fn capture(
+            State(tx): State<mpsc::UnboundedSender<Value>>,
+            Json(body): Json<Value>,
+        ) -> impl axum::response::IntoResponse {
+            let anthropic = body.get("system").is_some();
+            tx.send(body).unwrap();
+            let data = if anthropic {
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"fixture answer\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+            } else {
+                "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"
+            };
+            ([("content-type", "text/event-stream")], data)
+        }
+
+        let (tx, mut captured) = mpsc::unbounded_channel();
+        let router = Router::new()
+            .route("/v1/chat/completions", post(capture))
+            .route("/v1/messages", post(capture))
+            .with_state(tx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let tools = vec![ToolDef {
+            name: "fixture_tool".into(),
+            description: "fixture".into(),
+            parameters: json!({"type":"object", "properties":{}}),
+        }];
+        let mut messages = vec![Message {
+            role: "user".into(),
+            content: MessageContent::Text("fixture prompt".into()),
+        }];
+
+        for (provider, model, effort) in [
+            (LlmProvider::OpenAI, "deepseek-flash", Some("high")),
+            (LlmProvider::OpenAI, "gpt-5.2", Some("xhigh")),
+            (LlmProvider::Anthropic, "claude-opus-4-6", Some("max")),
+            (LlmProvider::Anthropic, "deepseek-v4-pro", Some("low")),
+            (LlmProvider::OpenAI, "unknown", None),
+            (LlmProvider::Anthropic, "unknown", None),
+        ] {
+            let client = LlmClient::new(LlmConfig {
+                provider,
+                model: model.into(),
+                base_url: base_url.clone(),
+                api_key: "fixture-key".into(),
+                reasoning_effort: effort.map(str::to_owned),
+            })
+            .unwrap();
+            for _ in 0..2 {
+                let mut stream = client
+                    .chat_stream(&messages, &tools, "fixture system")
+                    .await
+                    .unwrap();
+                let mut text = String::new();
+                while let Some(event) = stream.recv().await {
+                    if let LlmEvent::TextDelta(delta) = event {
+                        text.push_str(&delta);
+                    }
+                }
+                assert_eq!(text, "fixture answer");
+                let body = captured.recv().await.unwrap();
+                assert_eq!(body["model"], model);
+                assert!(!body["tools"].as_array().unwrap().is_empty());
+                match (provider, effort) {
+                    (LlmProvider::OpenAI, Some(effort)) => {
+                        assert_eq!(body["reasoning_effort"], effort);
+                        assert!(body.get("output_config").is_none());
+                    }
+                    (LlmProvider::Anthropic, Some(effort)) => {
+                        assert_eq!(body["output_config"]["effort"], effort);
+                        assert_eq!(body["max_tokens"], 32768);
+                        assert!(body.get("reasoning_effort").is_none());
+                    }
+                    (_, None) => {
+                        assert!(body.get("reasoning_effort").is_none());
+                        assert!(body.get("output_config").is_none());
+                        assert!(body.get("thinking").is_none());
+                        if provider == LlmProvider::Anthropic {
+                            assert_eq!(body["max_tokens"], 4096);
+                        }
+                    }
+                }
+                if model.starts_with("deepseek") && effort.is_some() {
+                    assert_eq!(body["thinking"]["type"], "enabled");
+                }
+                if model.starts_with("claude") {
+                    assert_eq!(body["thinking"]["type"], "adaptive");
+                }
+                messages = vec![
+                    Message {
+                        role: "assistant".into(),
+                        content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                            id: "fixture-call".into(),
+                            name: "fixture_tool".into(),
+                            input: json!({}),
+                        }]),
+                    },
+                    Message {
+                        role: "user".into(),
+                        content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                            tool_use_id: "fixture-call".into(),
+                            content: "fixture result".into(),
+                        }]),
+                    },
+                ];
+            }
+        }
+        server.abort();
+    }
 
     // ---- is_retryable_status ----
 
@@ -1348,6 +2244,22 @@ mod tests {
                     .collect(),
             ),
         }
+    }
+
+    #[test]
+    fn protocol_switch_projects_openai_tool_roles_for_anthropic() {
+        let mut first = tool_result_msg(&["a"]);
+        first.role = "tool".into();
+        let mut second = tool_result_msg(&["b"]);
+        second.role = "tool".into();
+        let input = vec![assistant_with_tool_uses(&["a", "b"]), first, second];
+        let before = serde_json::to_value(&input).unwrap();
+        let projected = normalize_anthropic_messages(&input);
+        assert_eq!(projected.len(), 2);
+        let result = message_to_anthropic_json(&projected[1]);
+        assert_eq!(result["role"], "user");
+        assert_eq!(result["content"].as_array().unwrap().len(), 2);
+        assert_eq!(serde_json::to_value(&input).unwrap(), before);
     }
 
     #[test]

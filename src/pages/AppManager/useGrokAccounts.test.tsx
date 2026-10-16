@@ -113,13 +113,17 @@ describe('Grok Build account lifecycle', () => {
     expect(api.refreshGrokAccount).not.toHaveBeenCalled();
     const selected = state.selectedId;
     vi.mocked(api.refreshGrokAccount).mockResolvedValueOnce({ ...unknown, plan: 'Free' });
-    await act(async () => state.refresh(unknown));
+    await act(async () => {
+      await state.refresh(unknown);
+    });
     expect(api.refreshGrokAccount).toHaveBeenCalledWith(unknown.id);
     expect(state.accounts).toEqual([{ ...unknown, plan: 'Free' }, other]);
     expect(state.selectedId).toBe(selected);
     expect(api.switchGrokAccount).not.toHaveBeenCalled();
     vi.mocked(api.refreshGrokAccount).mockRejectedValueOnce(new Error('accountError.network'));
-    await act(async () => state.refresh(state.accounts[0]));
+    await act(async () => {
+      await state.refresh(state.accounts[0]);
+    });
     expect(state.accounts).toEqual([{ ...unknown, plan: 'Free' }, other]);
     expect(showError).toHaveBeenCalledWith('accountError.network');
   });
@@ -136,7 +140,9 @@ describe('Grok Build account lifecycle', () => {
     expect(api.refreshGrokAccount).not.toHaveBeenCalled();
 
     vi.mocked(api.refreshGrokAccount).mockRejectedValueOnce(new Error('accountError.network'));
-    await act(async () => state.refresh(account));
+    await act(async () => {
+      await state.refresh(account);
+    });
     expect(showError).toHaveBeenCalledWith('accountError.network');
   });
   it('cancels a login that finishes starting after leaving the tool', async () => {
@@ -199,11 +205,13 @@ describe('Grok Build account lifecycle', () => {
     await mount();
     const waiting = deferred<api.GrokAccount>();
     vi.mocked(api.refreshGrokAccount).mockReturnValue(waiting.promise);
-    let operation!: Promise<void>;
+    let operation!: Promise<unknown>;
     act(() => {
       operation = state.refresh(account);
     });
-    await act(async () => state.refresh(account));
+    await act(async () => {
+      await state.refresh(account);
+    });
     expect(api.refreshGrokAccount).toHaveBeenCalledTimes(1);
     act(() => renderer.update(<Harness enabled={false} />));
     await act(async () => {
@@ -248,7 +256,9 @@ describe('Grok Build account lifecycle', () => {
       ...manus,
       credits: { total: 1300, free: 1000, refresh: 300, nextRefreshAt: null },
     });
-    await act(async () => state.refresh(manus));
+    await act(async () => {
+      await state.refresh(manus);
+    });
     expect(api.refreshManusAccount).toHaveBeenCalledWith(manus.id);
     expect(state.accounts[0]).toMatchObject({ credits: { total: 1300 } });
   });
@@ -613,7 +623,9 @@ describe('Grok Build account lifecycle', () => {
     };
     vi.mocked(api.refreshManusAccount).mockResolvedValueOnce(updated);
     const selected = state.selectedId;
-    await act(async () => state.refresh(manus));
+    await act(async () => {
+      await state.refresh(manus);
+    });
     expect(state.accounts).toEqual([updated]);
     expect(state.selectedId).toBe(selected);
     expect(api.refreshManusAccount).toHaveBeenCalledWith(manus.id);
@@ -624,7 +636,9 @@ describe('Grok Build account lifecycle', () => {
     vi.mocked(api.refreshManusAccount).mockRejectedValueOnce(
       new Error('accountError.loginRequired')
     );
-    await act(async () => state.refresh(state.accounts[0]));
+    await act(async () => {
+      await state.refresh(state.accounts[0]);
+    });
     expect(state.accounts).toEqual([updated]);
     expect(state.refreshing.size).toBe(0);
     expect(showError).toHaveBeenCalledWith('accountError.loginRequired');
@@ -638,14 +652,18 @@ describe('Grok Build account lifecycle', () => {
     const updated = { ...cue, weekly: { remainingPercent: 80, resetAt: 1792145701 } };
     vi.mocked(api.refreshCueAccount).mockResolvedValueOnce(updated);
     const selected = state.selectedId;
-    await act(async () => state.refresh(cue));
+    await act(async () => {
+      await state.refresh(cue);
+    });
     expect(state.accounts).toEqual([updated]);
     expect(state.selectedId).toBe(selected);
     expect(api.refreshCueAccount).toHaveBeenCalledWith(cue.id);
     expect(api.refreshManusAccount).not.toHaveBeenCalled();
     expect(api.switchCueAccount).not.toHaveBeenCalled();
     vi.mocked(api.refreshCueAccount).mockRejectedValueOnce(new Error('accountError.network'));
-    await act(async () => state.refresh(state.accounts[0]));
+    await act(async () => {
+      await state.refresh(state.accounts[0]);
+    });
     expect(state.accounts).toEqual([updated]);
     expect(state.refreshing.size).toBe(0);
     expect(showError).toHaveBeenCalledWith('accountError.network');

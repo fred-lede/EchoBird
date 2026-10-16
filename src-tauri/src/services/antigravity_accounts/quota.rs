@@ -11,6 +11,7 @@ pub(super) const CLIENT_SECRET: &str = match option_env!("ANTIGRAVITY_OAUTH_CLIE
     None => "",
 };
 const BASE: &str = "https://daily-cloudcode-pa.googleapis.com/v1internal:";
+pub(super) const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +74,10 @@ async fn post(token: &str, path: &str, body: Value) -> Result<Value, String> {
 }
 
 pub(super) async fn refresh_access(secret: &mut Value) -> Result<(), String> {
+    refresh_access_at(secret, TOKEN_URL).await
+}
+
+pub(super) async fn refresh_access_at(secret: &mut Value, token_url: &str) -> Result<(), String> {
     let expires = secret["token"]["expiry"]
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
@@ -86,7 +91,7 @@ pub(super) async fn refresh_access(secret: &mut Value) -> Result<(), String> {
         .filter(|s| !s.is_empty())
         .ok_or("accountError.invalidAccount")?;
     let response = client()?
-        .post("https://oauth2.googleapis.com/token")
+        .post(token_url)
         .form(&[
             ("client_id", CLIENT_ID),
             ("client_secret", CLIENT_SECRET),
@@ -97,9 +102,10 @@ pub(super) async fn refresh_access(secret: &mut Value) -> Result<(), String> {
         .await
         .map_err(|_| "accountError.network")?;
     if !response.status().is_success() {
-        return Err(format!(
-            "accountError.auth|HTTP {}",
-            response.status().as_u16()
+        let status = response.status().as_u16();
+        let body = response.json::<Value>().await.unwrap_or(Value::Null);
+        return Err(super::super::account_model_sources::oauth_refresh_error(
+            status, &body,
         ));
     }
     let result: Value = response
@@ -183,6 +189,56 @@ pub(super) async fn fetch(secret: &Value) -> Result<(Option<String>, Vec<ModelQu
 #[cfg(test)]
 mod tests {
     use super::model_quota;
+
+    #[tokio::test]
+    async fn refresh_rejection_retains_credential_failure_without_replacing_tokens() {
+        use axum::{http::StatusCode, routing::post, Router};
+        for (status, error, expected) in [
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error":"invalid_grant"}).to_string(),
+                "accountError.loginRequired|HTTP 400",
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error":"invalid_request"}).to_string(),
+                "accountError.auth|HTTP 400",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "<html>Service unavailable</html>".into(),
+                "accountError.auth|HTTP 503",
+            ),
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Rate limited".into(),
+                "accountError.auth|HTTP 429",
+            ),
+        ] {
+            let app = Router::new().route("/token", post(move || async move { (status, error) }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/token", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let mut secret = serde_json::json!({
+                "token":{"access_token":"expired-fixture","refresh_token":"fixture-refresh","expiry":null}
+            });
+            let original = secret.clone();
+            let error = super::refresh_access_at(&mut secret, &url)
+                .await
+                .unwrap_err();
+            assert_eq!(error, expected);
+            assert_eq!(
+                super::super::super::account_model_sources::credential_error(error).status,
+                if expected.starts_with("accountError.loginRequired") {
+                    StatusCode::UNAUTHORIZED
+                } else {
+                    status
+                }
+            );
+            assert_eq!(secret, original);
+            server.abort();
+        }
+    }
 
     #[test]
     fn parses_real_fraction_and_skips_missing_or_invalid_quota() {

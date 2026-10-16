@@ -12,6 +12,11 @@ import type { DetectedTool, ApplyModelInput, AppSettings } from './types';
 // ─── Re-export domain modules ───
 
 export * from './models';
+export * from './accountProxy';
+export * from './clientAccounts';
+export * from './cline';
+export * from './minimax';
+export * from './qoder';
 export * from './localServer';
 export * from './agent';
 export * from './parasite';
@@ -165,7 +170,8 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
 /// the file is missing.
 export async function getMyProjects(): Promise<unknown[]> {
   const arr = await invoke<unknown>('get_my_projects');
-  return Array.isArray(arr) ? arr : [];
+  if (!Array.isArray(arr)) throw new Error('PROJECTS_INVALID_DATA');
+  return arr;
 }
 
 /// Persist the full project registry (sent on every CRUD op).
@@ -349,6 +355,110 @@ export function refreshZCodeAccountQuota(accountId: string): Promise<ZCodeAccoun
 }
 export function deleteZCodeAccount(accountId: string): Promise<void> {
   return invoke('delete_zcode_account', { accountId });
+}
+
+export type KiroEdition = 'kirocrew' | 'kirocli';
+export interface KiroAccount {
+  id: string;
+  edition: KiroEdition;
+  name: string;
+  plan?: string | null;
+  active: boolean;
+  quota: {
+    label: string;
+    remaining?: number | null;
+    total?: number | null;
+    resetAt?: number | null;
+  }[];
+}
+export interface KiroLogin {
+  loginId: string;
+  verificationUri: string;
+  expiresAt: number;
+}
+export async function listKiroAccounts(edition: KiroEdition): Promise<KiroAccount[]> {
+  return invoke('list_kiro_accounts', { edition });
+}
+export async function startKiroLogin(edition: KiroEdition): Promise<KiroLogin> {
+  return invoke('start_kiro_login', { edition });
+}
+export async function pollKiroLogin(loginId: string): Promise<KiroAccount | null> {
+  return invoke('poll_kiro_login', { loginId });
+}
+export async function cancelKiroLogin(loginId: string): Promise<void> {
+  return invoke('cancel_kiro_login', { loginId });
+}
+export async function switchKiroAccount(edition: KiroEdition, accountId: string): Promise<void> {
+  return invoke('switch_kiro_account', { edition, accountId });
+}
+export async function refreshKiroAccountQuota(
+  edition: KiroEdition,
+  accountId: string
+): Promise<KiroAccount> {
+  return invoke('refresh_kiro_account_quota', { edition, accountId });
+}
+export async function deleteKiroAccount(edition: KiroEdition, accountId: string): Promise<void> {
+  return invoke('delete_kiro_account', { edition, accountId });
+}
+
+export type TraeEdition = 'trae' | 'traecn';
+export interface TraeAccount {
+  id: string;
+  edition: TraeEdition;
+  name: string;
+  plan: string | null;
+  active: boolean;
+  remaining?: number | null;
+  workRemaining?: number | null;
+  total?: number | null;
+  currency?: string | null;
+  expiresAt?: number | null;
+  baseRemaining?: number | null;
+  baseTotal?: number | null;
+  baseResetAt?: number | null;
+  rewardRemaining?: number | null;
+  rewardTotal?: number | null;
+  rewardNextExpiryAt?: number | null;
+  addonRemaining?: number | null;
+  dailyClaimedAt?: number | null;
+  deviceClaimedAt?: number | null;
+  rewardEnabled?: boolean | null;
+  subscriptionEndAt?: number | null;
+}
+export interface TraeLogin {
+  loginId: string;
+  verificationUri: string;
+  expiresAt: number;
+}
+export function listTraeAccounts(edition: TraeEdition): Promise<TraeAccount[]> {
+  return invoke('list_trae_accounts', { edition });
+}
+export function startTraeLogin(edition: TraeEdition): Promise<TraeLogin> {
+  return invoke('start_trae_login', { edition });
+}
+export function pollTraeLogin(loginId: string): Promise<TraeAccount | null> {
+  return invoke('poll_trae_login', { loginId });
+}
+export function cancelTraeLogin(loginId: string): Promise<void> {
+  return invoke('cancel_trae_login', { loginId });
+}
+export function switchTraeAccount(edition: TraeEdition, accountId: string): Promise<void> {
+  return invoke('switch_trae_account', { edition, accountId });
+}
+export function refreshTraeAccountQuota(
+  edition: TraeEdition,
+  accountId: string
+): Promise<TraeAccount> {
+  return invoke('refresh_trae_account_quota', { edition, accountId });
+}
+export function claimTraeDailyCredits(
+  edition: TraeEdition,
+  accountId: string
+): Promise<TraeAccount> {
+  return invoke('claim_trae_daily_credits', { edition, accountId });
+}
+export function deleteTraeAccount(edition: TraeEdition, accountId: string): Promise<void> {
+  return invoke('delete_trae_account', { edition, accountId });
 }
 
 export type WorkBuddyEdition = 'workbuddy' | 'workbuddyai';

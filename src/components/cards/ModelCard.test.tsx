@@ -2,6 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { getModelIcon } from './ModelCard';
 
 describe('getModelIcon', () => {
+  it('maps Kilo provider rows and endpoints to the existing tool icon', () => {
+    expect(getModelIcon('Kilo AI', '')).toBe('./icons/tools/kilo.png');
+    expect(getModelIcon('', 'https://api.kilo.ai/api/gateway')).toBe('./icons/tools/kilo.png');
+  });
+
+  it('keeps the model brand winning over the Kilo gateway for real ids', () => {
+    expect(getModelIcon('Kilo AI', 'anthropic/claude-sonnet-4.5')).toBe(
+      './icons/models/claude.svg'
+    );
+    expect(getModelIcon('Kilo AI', 'deepseek/deepseek-v3.2')).toBe('./icons/models/deepseek.svg');
+    expect(getModelIcon('Kilo AI', 'openai/gpt-5')).toBe('./icons/models/chatgpt.svg');
+  });
+
   it('maps OpenCode Zen / Go provider rows to the opencode icon', () => {
     // Provider/directory rows pass modelId='' — the vendor name must win.
     expect(getModelIcon('OpenCode Zen', '')).toBe('./icons/models/opencode.svg');

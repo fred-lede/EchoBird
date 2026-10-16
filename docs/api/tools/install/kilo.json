@@ -1,13 +1,13 @@
 {
     "id": "kilo",
-    "displayName": "Kilo Code (CLI)",
+    "displayName": "Kilo CLI",
     "homepage": "https://kilo.ai",
-    "docs": "https://kilo.ai/docs/cli",
+    "docs": "https://kilo.ai/docs/code-with-ai/platforms/cli",
     "github": "https://github.com/Kilo-Org/kilocode",
     "install": {
         "curl (macOS / Linux — recommended)": "curl -fsSL https://kilo.ai/cli/install | bash",
         "npm (all platforms)": "npm install -g @kilocode/cli",
-        "note": "CLI coding agent by Kilo, forked from OpenCode. The binary is `kilo` (curl installs to ~/.kilo/bin and updates PATH; restart the shell or source the rc file before verifying). Windows: use npm or the GitHub Releases binary. Do NOT install OpenCode's `@opencode/cli` — Kilo Code is a separate product with its own npm package `@kilocode/cli`."
+        "note": "CLI coding agent by Kilo, forked from OpenCode. The binary is `kilo` (curl installs to ~/.kilo/bin and updates PATH; restart the shell or source the rc file before verifying). Windows: use npm or the GitHub Releases binary. Do NOT install OpenCode's `@opencode/cli` — Kilo Code is a separate product with its own npm package `@kilocode/cli`. For standalone CLI updates, use `kilo upgrade` or `npm update -g @kilocode/cli`; Kilo Desktop updates its bundled CLI through the Desktop update lifecycle."
     },
     "network_requirements": {
         "test_urls": [
@@ -22,7 +22,7 @@
         }
     },
     "first_run": {
-        "description": "On first launch `kilo` opens a TUI. To use your own provider, add an OpenAI-compatible provider block in the config file, or run /connect and pick a provider. OpenRouter, Anthropic, and any OpenAI-compatible endpoint are supported.",
+        "description": "Run `kilo auth login` and select Kilo for browser account login, or run /connect in the TUI. Use `kilo auth list` to verify connected providers. Kilo Desktop uses the same Gateway credential store, with separate Desktop model preferences. Custom OpenAI-compatible providers remain supported.",
         "config_global": "~/.config/kilo/kilo.json",
         "config_project": "kilo.json",
         "verify": "kilo --version"

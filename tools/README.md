@@ -37,7 +37,7 @@ Tools that are installed as separate executables:
 - **opencode**: Open Code
 - **pi**: Pi assistant
 - **vibe-trading**: AI quant-research / market-analysis agent (Quant Analysis category)
-- **claudescience**: Claude Science (Science category, noModelConfig showcase, Windows/macOS/Linux)
+- **claudescience**: Claude Science (Science category, Anthropic-compatible model selection, Windows/macOS/Linux)
 - **dsh**: DeepSeek Harness (Desktop category, official Windows x64 / macOS Apple Silicon app with bundled runtimes; shares model settings and sessions under ~/.dsh with the CLI)
 
 ### 2. Desktop Apps

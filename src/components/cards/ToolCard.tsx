@@ -100,7 +100,7 @@ export const ToolCard = React.memo(
     };
     const iconUrl =
       iconSrc ||
-      `./icons/tools/${id}.${['dsh', 'grokbot', 'cline', 'clinedesktop', 'antigravity', 'antigravitydesktop'].includes(id) ? 'png' : 'svg'}`;
+      `./icons/tools/${id}.${['dsh', 'grokbot', 'cline', 'clinedesktop', 'antigravity', 'antigravitydesktop', 'musecode'].includes(id) ? 'png' : 'svg'}`;
 
     return (
       <div

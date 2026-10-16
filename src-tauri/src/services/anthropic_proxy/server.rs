@@ -1,8 +1,15 @@
 use std::time::Duration;
 
-use axum::{extract::DefaultBodyLimit, routing::post, Router};
+use axum::{
+    extract::DefaultBodyLimit,
+    routing::{get, post},
+    Router,
+};
 
-use super::{handle_messages, handle_messages_claudecode};
+use super::{
+    handle_messages, handle_messages_claudecode, handle_messages_claudescience,
+    handle_models_claudescience,
+};
 
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 
@@ -21,6 +28,11 @@ pub async fn run(listener: std::net::TcpListener) -> Result<(), String> {
     let app = Router::new()
         .route("/v1/messages", post(handle_messages))
         .route("/claudecode/v1/messages", post(handle_messages_claudecode))
+        .route(
+            "/claudescience/v1/messages",
+            post(handle_messages_claudescience),
+        )
+        .route("/claudescience/v1/models", get(handle_models_claudescience))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(AppState { http_client });
 

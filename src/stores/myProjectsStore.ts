@@ -95,21 +95,9 @@ const loadLegacyProjects = (): MyProject[] => {
 
 // Load the registry from ~/.echobird/projects.json.
 const loadProjectsFromFile = async (): Promise<MyProject[]> => {
-  try {
-    const arr = await api.getMyProjects();
-    return arr.filter(isValidProject);
-  } catch (e) {
-    console.error('[MyProjects] Failed to load projects:', e);
-    return [];
-  }
-};
-
-// Persist the full registry to ~/.echobird/projects.json. Fire-and-forget: a
-// failed write must not block the optimistic in-memory update.
-const saveToStorage = (projects: MyProject[]) => {
-  void api.saveMyProjects(projects).catch((e) => {
-    console.error('[MyProjects] Failed to save projects:', e);
-  });
+  const arr = await api.getMyProjects();
+  if (!arr.every(isValidProject)) throw new Error('PROJECTS_INVALID_DATA');
+  return arr;
 };
 
 const loadHiddenBuiltins = (): BuiltinToolId[] => {
@@ -194,9 +182,9 @@ interface MyProjectsState {
    *  restart since user projects don't have a scanTools equivalent to
    *  rehydrate from disk. */
   lastAppliedModelInternalId: Record<string, string>;
-  addProject: (input: MyProjectInput) => MyProject;
-  updateProject: (id: string, patch: Partial<MyProjectInput>) => void;
-  deleteProject: (id: string) => void;
+  addProject: (input: MyProjectInput) => Promise<MyProject>;
+  updateProject: (id: string, patch: Partial<MyProjectInput>) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
   hideBuiltin: (id: BuiltinToolId) => void;
   setSelectedUserProjectId: (id: string | null) => void;
   setUserProjectModelChoice: (projectId: string, modelInternalId: string | null) => void;
@@ -211,109 +199,149 @@ interface MyProjectsState {
   ensureBuiltinDirs: (tools: LocalTool[]) => Promise<void>;
 }
 
-export const useMyProjectsStore = create<MyProjectsState>((set, get) => ({
-  projects: [],
-  builtinDirs: {},
-  hiddenBuiltins: [],
-  selectedUserProjectId: null,
-  userProjectModelChoice: {},
-  userProjectLaunchAfterApply: true,
-  userProjectAgreedConfigPolicy: true,
-  lastAppliedModelInternalId: {},
-  addProject: (input) => {
-    const project: MyProject = {
-      ...input,
-      id: makeId(input.name),
-      createdAt: Date.now(),
-    };
-    const next = [...get().projects, project];
-    saveToStorage(next);
-    set({ projects: next });
-    return project;
-  },
-  updateProject: (id, patch) => {
-    const next = get().projects.map((p) => (p.id === id ? { ...p, ...patch } : p));
-    saveToStorage(next);
-    set({ projects: next });
-  },
-  deleteProject: (id) => {
-    const next = get().projects.filter((p) => p.id !== id);
-    saveToStorage(next);
-    set({ projects: next });
-  },
-  hideBuiltin: (id) => {
-    const current = get().hiddenBuiltins;
-    if (current.includes(id)) return;
-    const next = [...current, id];
-    saveHiddenBuiltins(next);
-    set({ hiddenBuiltins: next });
-  },
-  setSelectedUserProjectId: (id) => set({ selectedUserProjectId: id }),
-  setUserProjectModelChoice: (projectId, modelInternalId) =>
-    set((s) => ({
-      userProjectModelChoice: { ...s.userProjectModelChoice, [projectId]: modelInternalId },
-    })),
-  setUserProjectLaunchAfterApply: (v) => set({ userProjectLaunchAfterApply: v }),
-  setUserProjectAgreedConfigPolicy: (v) => set({ userProjectAgreedConfigPolicy: v }),
-  setLastAppliedModel: (projectId, modelInternalId) =>
-    set((s) => ({
-      lastAppliedModelInternalId: {
-        ...s.lastAppliedModelInternalId,
-        [projectId]: modelInternalId,
-      },
-    })),
-  init: async () => {
-    let raw = await loadProjectsFromFile();
-    // One-time migration off the old localStorage store: only when the file is
-    // empty AND localStorage still holds entries (i.e. an upgrading user who
-    // hasn't migrated yet).
-    let migratedLegacy = false;
-    if (raw.length === 0) {
-      const legacy = loadLegacyProjects();
-      if (legacy.length > 0) {
-        raw = legacy;
-        migratedLegacy = true;
+export const useMyProjectsStore = create<MyProjectsState>((set, get) => {
+  let loaded = false;
+  let legacyMigrationPending = false;
+  let pending: Promise<void> = Promise.resolve();
+  const enqueue = <T>(action: () => Promise<T>): Promise<T> => {
+    const next = pending.then(action);
+    pending = next.then(
+      () => {},
+      () => {}
+    );
+    return next;
+  };
+  const persist = async (projects: MyProject[]) => {
+    if (!loaded) throw new Error('PROJECTS_READ_FAILED');
+    await api.saveMyProjects(projects);
+    if (legacyMigrationPending) {
+      localStorage.removeItem(LS_KEY);
+      legacyMigrationPending = false;
+    }
+    set({ projects });
+  };
+  return {
+    projects: [],
+    builtinDirs: {},
+    hiddenBuiltins: [],
+    selectedUserProjectId: null,
+    userProjectModelChoice: {},
+    userProjectLaunchAfterApply: true,
+    userProjectAgreedConfigPolicy: true,
+    lastAppliedModelInternalId: {},
+    addProject: (input) =>
+      enqueue(async () => {
+        const project: MyProject = {
+          ...input,
+          id: makeId(input.name),
+          createdAt: Date.now(),
+        };
+        const next = [...get().projects, project];
+        await persist(next);
+        return project;
+      }),
+    updateProject: (id, patch) =>
+      enqueue(async () => {
+        const next = get().projects.map((p) => (p.id === id ? { ...p, ...patch } : p));
+        await persist(next);
+      }),
+    deleteProject: (id) =>
+      enqueue(async () => {
+        const next = get().projects.filter((p) => p.id !== id);
+        await persist(next);
+      }),
+    hideBuiltin: (id) => {
+      const current = get().hiddenBuiltins;
+      if (current.includes(id)) return;
+      const next = [...current, id];
+      saveHiddenBuiltins(next);
+      set({ hiddenBuiltins: next });
+    },
+    setSelectedUserProjectId: (id) => set({ selectedUserProjectId: id }),
+    setUserProjectModelChoice: (projectId, modelInternalId) =>
+      set((s) => ({
+        userProjectModelChoice: { ...s.userProjectModelChoice, [projectId]: modelInternalId },
+      })),
+    setUserProjectLaunchAfterApply: (v) => set({ userProjectLaunchAfterApply: v }),
+    setUserProjectAgreedConfigPolicy: (v) => set({ userProjectAgreedConfigPolicy: v }),
+    setLastAppliedModel: (projectId, modelInternalId) =>
+      set((s) => ({
+        lastAppliedModelInternalId: {
+          ...s.lastAppliedModelInternalId,
+          [projectId]: modelInternalId,
+        },
+      })),
+    init: () =>
+      enqueue(async () => {
+        loaded = false;
+        let raw: MyProject[];
+        try {
+          raw = await loadProjectsFromFile();
+        } catch (error) {
+          console.error('[MyProjects] Failed to load projects:', error);
+          return;
+        }
+        loaded = true;
+        // One-time migration off the old localStorage store: only when the file is
+        // empty AND localStorage still holds entries (i.e. an upgrading user who
+        // hasn't migrated yet).
+        let migratedLegacy = false;
+        if (raw.length === 0) {
+          const legacy = loadLegacyProjects();
+          if (legacy.length > 0) {
+            raw = legacy;
+            migratedLegacy = true;
+          }
+        }
+        // Strip seeded built-in entries (linkedToolId set) — they moved out of user
+        // storage when we switched to the two-table model; keeping them would render
+        // duplicates next to the computed built-ins.
+        const filtered = raw.filter((p) => !p.linkedToolId);
+        legacyMigrationPending = migratedLegacy;
+        if (migratedLegacy) {
+          // Persist the migrated set, then drop the old localStorage copy ONLY on a
+          // successful write. Otherwise a later empty file (user deleted every
+          // project) would re-import the stale copy and resurrect them. On failure
+          // we keep localStorage so the data isn't lost and migration retries next
+          // launch.
+          try {
+            await api.saveMyProjects(filtered);
+            localStorage.removeItem(LS_KEY);
+            legacyMigrationPending = false;
+          } catch (e) {
+            console.error(
+              '[MyProjects] localStorage→file migration failed; keeping localStorage:',
+              e
+            );
+          }
+        } else if (filtered.length !== raw.length) {
+          try {
+            await api.saveMyProjects(filtered);
+          } catch (error) {
+            console.error('[MyProjects] Failed to save project migration:', error);
+          }
+        }
+        try {
+          localStorage.removeItem(LEGACY_SEED_FLAG_KEY);
+        } catch {
+          /* private mode */
+        }
+        set({ projects: filtered, hiddenBuiltins: loadHiddenBuiltins() });
+      }),
+    ensureBuiltinDirs: async (tools) => {
+      const next: Partial<Record<BuiltinToolId, string>> = { ...get().builtinDirs };
+      let changed = false;
+      for (const id of BUILTIN_TOOL_IDS) {
+        if (next[id]) continue; // already resolved
+        if (!tools.some((t) => t.id === id)) continue; // tool scan hasn't surfaced this id yet
+        try {
+          next[id] = await api.seedBuiltinToUserDir(id);
+          changed = true;
+        } catch (e) {
+          console.error(`[MyProjects] Failed to ensure built-in dir for ${id}:`, e);
+        }
       }
-    }
-    // Strip seeded built-in entries (linkedToolId set) — they moved out of user
-    // storage when we switched to the two-table model; keeping them would render
-    // duplicates next to the computed built-ins.
-    const filtered = raw.filter((p) => !p.linkedToolId);
-    if (migratedLegacy) {
-      // Persist the migrated set, then drop the old localStorage copy ONLY on a
-      // successful write. Otherwise a later empty file (user deleted every
-      // project) would re-import the stale copy and resurrect them. On failure
-      // we keep localStorage so the data isn't lost and migration retries next
-      // launch.
-      try {
-        await api.saveMyProjects(filtered);
-        localStorage.removeItem(LS_KEY);
-      } catch (e) {
-        console.error('[MyProjects] localStorage→file migration failed; keeping localStorage:', e);
-      }
-    } else if (filtered.length !== raw.length) {
-      saveToStorage(filtered);
-    }
-    try {
-      localStorage.removeItem(LEGACY_SEED_FLAG_KEY);
-    } catch {
-      /* private mode */
-    }
-    set({ projects: filtered, hiddenBuiltins: loadHiddenBuiltins() });
-  },
-  ensureBuiltinDirs: async (tools) => {
-    const next: Partial<Record<BuiltinToolId, string>> = { ...get().builtinDirs };
-    let changed = false;
-    for (const id of BUILTIN_TOOL_IDS) {
-      if (next[id]) continue; // already resolved
-      if (!tools.some((t) => t.id === id)) continue; // tool scan hasn't surfaced this id yet
-      try {
-        next[id] = await api.seedBuiltinToUserDir(id);
-        changed = true;
-      } catch (e) {
-        console.error(`[MyProjects] Failed to ensure built-in dir for ${id}:`, e);
-      }
-    }
-    if (changed) set({ builtinDirs: next });
-  },
-}));
+      if (changed) set({ builtinDirs: next });
+    },
+  };
+});

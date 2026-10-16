@@ -15,6 +15,18 @@ export async function resetAgent(serverKey: string): Promise<string> {
   return invoke('agent_reset', { serverKey });
 }
 
+export async function resetConversationContext(
+  serverKey: string,
+  includeParasite: boolean,
+  parasiteConversationId?: string
+): Promise<string> {
+  return invoke('agent_reset_conversation_context', {
+    serverKey,
+    includeParasite,
+    parasiteConversationId,
+  });
+}
+
 export function listenAgentEvents(handler: (event: AgentEvent) => void): Promise<UnlistenFn> {
   return listen<AgentEvent>('agent_event', (e) => handler(e.payload));
 }

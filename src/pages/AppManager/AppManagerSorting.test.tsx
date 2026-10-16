@@ -169,6 +169,19 @@ describe('App Desktop drag sorting', () => {
     expect(select).toHaveBeenCalledExactlyOnceWith('store-a');
   });
 
+  it('keeps store categories visible above the scrolling app grid', () => {
+    open();
+    const categories = renderer.root
+      .findAllByType('div')
+      .find((node) => node.props.className?.includes('shrink-0 flex-wrap gap-1'))!;
+    const scroller = renderer.root
+      .findAllByType('div')
+      .find((node) => node.props.className?.includes('overflow-y-auto'))!;
+    expect(categories.parent).toBe(scroller.parent);
+    expect(scroller.findAllByProps({ 'aria-pressed': true })).toHaveLength(0);
+    expect(scroller.findAllByProps({ 'aria-label': 'Store A' })).toHaveLength(1);
+  });
+
   it('falls back to the default order for missing or malformed local state', () => {
     storage.set('echobird_appmgr_store_order', 'invalid JSON');
     open();

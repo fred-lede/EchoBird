@@ -225,7 +225,7 @@ describe.each(['grokbot', 'cursor'] as const)('%s account lifecycle', (tool) => 
     await mount();
     const waiting = deferred<api.CursorUsage>();
     vi.mocked(client.refresh).mockReturnValue(waiting.promise);
-    let operation!: Promise<void>;
+    let operation!: Promise<unknown>;
     act(() => {
       state.select(null);
       operation = state.refresh(account);
@@ -249,7 +249,7 @@ describe.each(['grokbot', 'cursor'] as const)('%s account lifecycle', (tool) => 
     await mount();
     const waiting = deferred<api.CursorUsage>();
     vi.mocked(client.refresh).mockReturnValue(waiting.promise);
-    let operation!: Promise<void>;
+    let operation!: Promise<unknown>;
     act(() => {
       operation = state.refresh(account);
     });

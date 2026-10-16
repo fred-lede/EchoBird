@@ -33,11 +33,10 @@ export const DeepSeekAccountSection: React.FC<{ showDivider?: boolean }> = ({
               onRefresh={() => void refresh(account)}
               onDelete={() => void remove(account)}
               secondary={
-                <span className="flex h-[16px] items-center justify-between">
-                  <span className="truncate text-[12px] font-semibold leading-[16px] text-cyber-text">
-                    {account.balances === null
-                      ? '—'
-                      : account.balances.length === 0
+                account.balances == null ? undefined : (
+                  <span className="flex h-[16px] items-center justify-between">
+                    <span className="truncate text-[12px] font-semibold leading-[16px] text-cyber-text">
+                      {account.balances.length === 0
                         ? '0'
                         : account.balances
                             .map((balance) =>
@@ -48,8 +47,9 @@ export const DeepSeekAccountSection: React.FC<{ showDivider?: boolean }> = ({
                               }).format(balance.amount)
                             )
                             .join(' / ')}
+                    </span>
                   </span>
-                </span>
+                )
               }
             />
           ))}

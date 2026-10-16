@@ -38,7 +38,7 @@ interface DownloadContextValue {
   // Trigger download (also used for resuming after pause). Pass the variant's
   // full `files` array — single-element for single-file GGUFs, multi-element
   // for sharded GGUFs. The first entry becomes the progress map's primary key.
-  startDownload: (repo: string, files: string[]) => void;
+  startDownload: (repo: string, files: string[]) => Promise<void>;
   // Pause download (saves progress, resumable)
   pauseDownload: () => void;
   // Cancel download. Pass the variant's `files` so cancel-after-pause can
@@ -59,6 +59,8 @@ export const DownloadProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [downloads, setDownloads] = useState<Map<string, DownloadItem>>(new Map());
   // Auto-cleanup timer refs
   const cleanupTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const downloadStatuses = useRef<Map<string, DownloadItem['status']>>(new Map());
+  const downloadAttempt = useRef(0);
 
   // Listen to Tauri download progress events
   useEffect(() => {
@@ -66,6 +68,12 @@ export const DownloadProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     let cancelled = false;
     api
       .onDownloadProgress((data) => {
+        downloadStatuses.current.set(data.fileName, data.status);
+        const previousTimer = cleanupTimers.current.get(data.fileName);
+        if (previousTimer) {
+          clearTimeout(previousTimer);
+          cleanupTimers.current.delete(data.fileName);
+        }
         setDownloads((prev) => {
           const next = new Map(prev);
           const existing = prev.get(data.fileName);
@@ -96,6 +104,7 @@ export const DownloadProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               return next;
             });
             cleanupTimers.current.delete(data.fileName);
+            downloadStatuses.current.delete(data.fileName);
           }, 5000);
           cleanupTimers.current.set(data.fileName, timer);
         }
@@ -125,9 +134,17 @@ export const DownloadProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // separate entry and the 0%-downloading row never updates.
   const startDownload = useCallback(async (repo: string, files: string[]) => {
     if (!files.length) return;
+    if (
+      Array.from(downloadStatuses.current.values()).some((status) =>
+        ['downloading', 'speed_test', 'installing'].includes(status)
+      )
+    )
+      return;
     const head = files[0];
+    const attempt = ++downloadAttempt.current;
     const slash = head.lastIndexOf('/');
     const primary = slash === -1 ? head : head.slice(slash + 1);
+    downloadStatuses.current.set(primary, 'downloading');
     // A prior completed/cancelled download of the same basename may still have
     // a pending 5s cleanup timer; cancel it so it can't delete this fresh entry.
     const pendingCleanup = cleanupTimers.current.get(primary);
@@ -154,6 +171,13 @@ export const DownloadProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     try {
       await api.downloadModel(repo, files);
     } catch (e) {
+      if (attempt !== downloadAttempt.current) return;
+      if (
+        ['paused', 'cancelled', 'completed'].includes(downloadStatuses.current.get(primary) || '')
+      ) {
+        return;
+      }
+      downloadStatuses.current.set(primary, 'error');
       console.error('[DownloadContext] Download failed:', e);
       // The invoke rejected before any progress event — transition the optimistic
       // row to 'error' and schedule the same 5s cleanup the progress path uses,
@@ -173,6 +197,7 @@ export const DownloadProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           return next;
         });
         cleanupTimers.current.delete(primary);
+        downloadStatuses.current.delete(primary);
       }, 5000);
       cleanupTimers.current.set(primary, timer);
     }
@@ -199,11 +224,17 @@ export const DownloadProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Derived values (memoized to prevent unnecessary re-renders)
   const isDownloading = React.useMemo(
-    () => Array.from(downloads.values()).some((d) => d.status === 'downloading'),
+    () =>
+      Array.from(downloads.values()).some((d) =>
+        ['downloading', 'speed_test', 'installing'].includes(d.status)
+      ),
     [downloads]
   );
   const activeDownload = React.useMemo(
-    () => Array.from(downloads.values()).find((d) => d.status === 'downloading') || null,
+    () =>
+      Array.from(downloads.values()).find((d) =>
+        ['downloading', 'speed_test', 'installing'].includes(d.status)
+      ) || null,
     [downloads]
   );
 

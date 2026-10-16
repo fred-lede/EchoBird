@@ -41,7 +41,8 @@ describe('DeepSeek accounts', () => {
     expect(markup).toContain('grid-cols-[minmax(0,1fr)_auto]');
   });
   it('distinguishes unknown balance from zero and reuses the waiting label', () => {
-    expect(render(null).match(/—/g)).toHaveLength(1);
+    expect(render(null)).toContain('model.noUsageData');
+    expect(render(null)).not.toContain('—');
     expect(render([{ currency: 'CNY', amount: 0 }])).toContain('0.00');
     expect(render(null, true)).not.toContain('agent.addCurrentAccount');
   });

@@ -128,7 +128,13 @@ async fn explicit_refresh_queries_the_requested_account_and_keeps_grades_after_s
     fs::write(fixture.native.parent().unwrap().join("settings_cache.json"),
         json!({"payload":json!({"settings":{"subscription_tier_display":"Foreign plan"}}).to_string()}).to_string()).unwrap();
     let first_saved = fixture.saved(&fixture.first);
-    apply_native(fixture.native.parent().unwrap(), &first_saved).unwrap();
+    storage::apply_at(
+        &fixture.store,
+        &fixture.native,
+        &fixture.native.parent().unwrap().join("settings_cache.json"),
+        &first_saved,
+    )
+    .unwrap();
     let rows = list_at(&fixture.store, &fixture.native).unwrap();
     assert!(rows
         .iter()

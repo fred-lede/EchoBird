@@ -1,6 +1,6 @@
 // context.ts — ModelNexus shared context + types
 import React, { createContext, useContext } from 'react';
-import type { ModelConfig } from '../../api/types';
+import type { AccountSource, ModelConfig } from '../../api/types';
 import type { ModelUsageData } from '../../api/tauri';
 
 // ===== Types =====
@@ -16,6 +16,8 @@ export interface NewModelForm {
   // model id input. Absent/empty → no dropdown (manual add / edit). Purely a
   // convenience picker; the model id input is always free-editable.
   modelIdOptions?: string[];
+  freeModelIds?: string[];
+  accountSource?: AccountSource;
 }
 
 export type ModelModalDestination = 'modelNexus' | 'freeRouter';

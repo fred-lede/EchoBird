@@ -1,0 +1,24 @@
+{
+    "id": "kirocli",
+    "displayName": "Kiro CLI",
+    "homepage": "https://kiro.dev/cli/",
+    "docs": "https://kiro.dev/docs/getting-started/installation/",
+    "kind": "cli",
+    "platforms": ["windows", "macos", "linux"],
+    "install": {
+        "windows_powershell": "Invoke-RestMethod 'https://cli.kiro.dev/install.ps1' | Invoke-Expression",
+        "macos_curl": "curl -fsSL https://cli.kiro.dev/install | bash",
+        "linux_curl": "curl -fsSL https://cli.kiro.dev/install | bash",
+        "note": "Use the official current installer. Windows requires Windows 11 and PowerShell. Linux requires glibc 2.34+ or the official compatible musl variant. Do not pin an obsolete release or substitute Crew's bundled CLI for the standalone installation."
+    },
+    "install_flow": {
+        "summary": "Detect platform and existing CLI -> run the current official installer -> verify the executable and version.",
+        "agent_steps": [
+            "Detect OS, architecture and existing kiro-cli first; do not reinstall a working CLI. Windows: %LOCALAPPDATA%\\Kiro-Cli\\kiro-cli.exe or %ProgramFiles%\\Kiro-Cli\\kiro-cli.exe, and the Kiro CLI MSI registration. macOS/Linux: ~/.local/bin/kiro-cli or the current native installation on PATH.",
+            "Windows 11: run install.windows_powershell in PowerShell with a hidden background window. The official script selects the supported architecture and current signed package. Check its exit status; do not silently change shell execution policy or install an unsupported build. If elevation or an interactive installer remains required, report that step.",
+            "macOS/Linux: run the official install.macos_curl or install.linux_curl command in the user's shell. Let the installer select the supported architecture. Check its exit status and any platform prerequisite message. Never run a package for a different architecture.",
+            "Refresh EchoBird detection and verify the full kiro-cli path with --version. Preserve user settings, conversations and native credentials. EchoBird launches kiro-cli chat through its normal terminal and project-directory flow."
+        ]
+    },
+    "network_requirements": {"test_urls": ["https://kiro.dev/docs/getting-started/installation/", "https://cli.kiro.dev/install", "https://cli.kiro.dev/install.ps1"], "mirrors": {}}
+}

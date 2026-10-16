@@ -74,6 +74,7 @@ export const getModelIcon = (name: string, modelId?: string): string | null => {
     // by the provider-row name. The model brand in the id must win, so this
     // stays below the model-brand rules.
     [['opencode', 'open code'], 'opencode'],
+    [['kilo'], 'kilo'],
     // Resellers (pure compute providers that host third-party models, e.g.
     // CC Vibe) go LAST. A model card carries a modelId that identifies the
     // actual model brand (glm/kimi/deepseek/minimax), and the model logo must
@@ -92,6 +93,7 @@ export const getModelIcon = (name: string, modelId?: string): string | null => {
 
   for (const [keywords, icon] of iconMap) {
     if (keywords.some((kw) => text.includes(kw))) {
+      if (icon === 'kilo') return './icons/tools/kilo.png';
       if (icon === 'agnes') return './icons/models/agnes.png';
       if (icon === 'ccvibe') return './icons/models/ccvibe.png';
       if (icon === '88api') return './icons/models/88api.png';
@@ -100,6 +102,7 @@ export const getModelIcon = (name: string, modelId?: string): string | null => {
       if (icon === 'sidrune') return './icons/models/sidrune.png';
       if (icon === 'byteplus') return './icons/models/byteplus.png';
       if (icon === 'qianwen') return './icons/models/qianwen.png';
+      if (icon === 'meta') return './icons/models/meta.png';
       return `./icons/models/${icon}.svg`;
     }
   }

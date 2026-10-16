@@ -116,6 +116,36 @@ fn is_encrypted(key: &str) -> bool {
 /// macOS: IOPlatformUUID via ioreg
 /// Linux: /etc/machine-id
 fn get_machine_fingerprint() -> String {
+    static FINGERPRINT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    machine_fingerprint_with(
+        &FINGERPRINT,
+        probe_machine_fingerprint,
+        fallback_machine_fingerprint,
+    )
+}
+
+fn machine_fingerprint_with(
+    cache: &std::sync::Mutex<Option<String>>,
+    probe: impl FnOnce() -> Option<String>,
+    fallback: impl FnOnce() -> String,
+) -> String {
+    let mut cached = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(fingerprint) = cached.as_ref() {
+        return fingerprint.clone();
+    }
+    if let Some(fingerprint) = probe() {
+        if !fingerprint.is_empty() {
+            *cached = Some(fingerprint.clone());
+        }
+        return fingerprint;
+    }
+    drop(cached);
+    fallback()
+}
+
+fn probe_machine_fingerprint() -> Option<String> {
     #[cfg(windows)]
     {
         if let Ok(output) = crate::utils::process::command("reg")
@@ -131,7 +161,7 @@ fn get_machine_fingerprint() -> String {
             // Output format: "    MachineGuid    REG_SZ    <guid>"
             if let Some(line) = text.lines().find(|l| l.contains("MachineGuid")) {
                 if let Some(guid) = line.split_whitespace().last() {
-                    return guid.to_string();
+                    return Some(guid.to_string());
                 }
             }
         }
@@ -147,7 +177,7 @@ fn get_machine_fingerprint() -> String {
             for line in text.lines() {
                 if line.contains("IOPlatformUUID") {
                     if let Some(uuid) = line.split('"').nth(3) {
-                        return uuid.to_string();
+                        return Some(uuid.to_string());
                     }
                 }
             }
@@ -159,11 +189,15 @@ fn get_machine_fingerprint() -> String {
         if let Ok(id) = std::fs::read_to_string("/etc/machine-id") {
             let trimmed = id.trim().to_string();
             if !trimmed.is_empty() {
-                return trimmed;
+                return Some(trimmed);
             }
         }
     }
 
+    None
+}
+
+fn fallback_machine_fingerprint() -> String {
     // Fallback: hostname via env var
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
@@ -174,9 +208,6 @@ fn get_machine_fingerprint() -> String {
 /// Actual AES key = HMAC-SHA256(random_file_key, machine_fingerprint)
 /// This ensures: same machine + same file = works; different machine = self-destruct.
 fn get_encryption_key() -> Result<[u8; 32], String> {
-    use hmac::Mac;
-    type HmacSha256 = hmac::Hmac<sha2::Sha256>;
-
     let key_path = echobird_dir().join("config").join(".encryption_key");
 
     let file_key = if key_path.exists() {
@@ -197,9 +228,20 @@ fn get_encryption_key() -> Result<[u8; 32], String> {
     let username = std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_else(|_| "default".to_string());
+    derive_encryption_key(&file_key, &fingerprint, &username)
+}
+
+fn derive_encryption_key(
+    file_key: &[u8],
+    fingerprint: &str,
+    username: &str,
+) -> Result<[u8; 32], String> {
+    use hmac::Mac;
+    type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
     let identity = format!("{}|{}", fingerprint, username);
 
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(&file_key)
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(file_key)
         .map_err(|e| format!("HMAC init error: {}", e))?;
     hmac::Mac::update(&mut mac, identity.as_bytes());
     let result = mac.finalize().into_bytes();
@@ -329,6 +371,146 @@ pub fn encrypt_key_for_storage(plain_key: &str) -> String {
 
 // ─── Model CRUD ───
 
+pub(crate) fn prepare_initial_router_defaults() -> Result<Option<Vec<ModelConfig>>, String> {
+    prepare_initial_router_defaults_at(&echobird_dir())
+}
+
+fn prepare_initial_router_defaults_at(
+    root: &std::path::Path,
+) -> Result<Option<Vec<ModelConfig>>, String> {
+    if !is_new_installation_at(root)? {
+        return Ok(None);
+    }
+    let catalog = super::free_model_directory::bundled_free_model_directory()?;
+    initial_router_defaults(&catalog).map(Some)
+}
+
+fn is_new_installation_at(root: &std::path::Path) -> Result<bool, String> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(format!("Failed to inspect saved application data: {error}")),
+    };
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("Failed to inspect application data: {error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("Failed to inspect application data: {error}"))?;
+        if entry.file_name() != "config" || !file_type.is_dir() {
+            return Ok(false);
+        }
+        // These listeners start before the router during first launch.
+        for config in fs::read_dir(entry.path())
+            .map_err(|error| format!("Failed to inspect saved configuration: {error}"))?
+        {
+            let config = config
+                .map_err(|error| format!("Failed to inspect saved configuration: {error}"))?;
+            let generated_port = matches!(
+                config.file_name().to_str(),
+                Some("anthropic-proxy-port.json" | "musecode-proxy-port.json")
+            );
+            if !generated_port
+                || !config
+                    .file_type()
+                    .map_err(|error| format!("Failed to inspect saved configuration: {error}"))?
+                    .is_file()
+            {
+                return Ok(false);
+            }
+            let port: serde_json::Value = serde_json::from_slice(
+                &fs::read(config.path())
+                    .map_err(|error| format!("Failed to read saved proxy port: {error}"))?,
+            )
+            .map_err(|error| format!("Failed to parse saved proxy port: {error}"))?;
+            if !port["port"]
+                .as_u64()
+                .is_some_and(|value| value > 0 && value <= u16::MAX as u64)
+            {
+                return Err("Saved proxy port is invalid".to_string());
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn initial_router_defaults(catalog: &serde_json::Value) -> Result<Vec<ModelConfig>, String> {
+    let entries = catalog["models"]
+        .as_array()
+        .ok_or_else(|| "Bundled free model catalog has no models".to_string())?;
+    [
+        ("kilo", "kilo-auto/free", "router-default-kilo"),
+        ("opencode-zen-free", "big-pickle", "router-default-zen-free"),
+    ]
+    .into_iter()
+    .map(|(provider_id, model_id, internal_id)| {
+        let entry = entries
+            .iter()
+            .find(|entry| {
+                entry["providerId"].as_str() == Some(provider_id)
+                    && entry["modelId"].as_str() == Some(model_id)
+            })
+            .ok_or_else(|| format!("Bundled default model is unavailable: {model_id}"))?;
+        let base_url = entry["baseUrl"]
+            .as_str()
+            .ok_or_else(|| format!("Bundled default model has no endpoint: {model_id}"))?;
+        if super::free_model_directory::keyless_auth_in_catalog(catalog, base_url, model_id)
+            .is_none()
+        {
+            return Err(format!("Bundled default model requires a key: {model_id}"));
+        }
+        let name = entry["provider"]
+            .as_str()
+            .ok_or_else(|| format!("Bundled default model has no provider: {model_id}"))?;
+        Ok(new_model_from(
+            AddModelInput {
+                name: Some(name.to_string()),
+                model_id: Some(model_id.to_string()),
+                base_url: Some(base_url.to_string()),
+                scope: crate::models::model::ModelScope::SmartRouter,
+                ..Default::default()
+            },
+            internal_id.to_string(),
+        ))
+    })
+    .collect()
+}
+
+pub(crate) fn persist_initial_router_defaults() -> Result<(), String> {
+    let catalog = super::free_model_directory::bundled_free_model_directory()?;
+    persist_initial_router_defaults_at(&echobird_dir(), &catalog)
+}
+
+fn persist_initial_router_defaults_at(
+    root: &std::path::Path,
+    catalog: &serde_json::Value,
+) -> Result<(), String> {
+    let defaults = initial_router_defaults(catalog)?;
+    let path = root.join("config").join("models.json");
+    let mut models: Vec<ModelConfig> = match fs::read(&path) {
+        Ok(content) => serde_json::from_slice(&content)
+            .map_err(|error| format!("Failed to parse saved models: {error}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(format!("Failed to read saved models: {error}")),
+    };
+    let original_len = models.len();
+    for model in defaults {
+        if !models
+            .iter()
+            .any(|saved| saved.internal_id == model.internal_id)
+        {
+            models.push(model);
+        }
+    }
+    super::free_model_directory::seed_catalog_cache_at(root, catalog)?;
+    if models.len() != original_len {
+        fs::create_dir_all(path.parent().expect("model path has a parent"))
+            .map_err(|error| format!("Failed to create model configuration: {error}"))?;
+        save_updated_models_at(&path, &models)?;
+    }
+    Ok(())
+}
+
 /// Read raw user models from disk
 fn get_raw_user_models() -> Vec<ModelConfig> {
     let path = models_config_path();
@@ -398,6 +580,7 @@ pub fn get_models() -> Vec<ModelConfig> {
             model_id: Some(server_info.model_name.clone()),
             base_url: format!("http://127.0.0.1:{}/v1", server_info.port),
             api_key: server_info.api_key.clone(),
+            account_source: None,
             anthropic_url: Some(format!("http://127.0.0.1:{}/anthropic", server_info.port)),
             model_type: Some(crate::models::model::ModelType::Local),
             openai_tested: None,
@@ -470,6 +653,8 @@ pub struct AddModelInput {
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
+    pub account_source: Option<crate::models::model::AccountSource>,
+    #[serde(default)]
     pub model_id: Option<String>,
     #[serde(default)]
     pub scope: crate::models::model::ModelScope,
@@ -477,34 +662,52 @@ pub struct AddModelInput {
 
 pub fn add_model(input: AddModelInput) -> ModelConfig {
     let mut models = get_user_models();
+    let new_model = new_model_from(input, generate_internal_id());
 
-    let base_url = input.base_url.unwrap_or_default();
+    log::info!(
+        "[ModelManager] Added model: {} ({})",
+        new_model.name,
+        new_model.internal_id
+    );
+    models.push(new_model.clone());
+    save_user_models(&models);
+    new_model
+}
+
+fn new_model_from(input: AddModelInput, internal_id: String) -> ModelConfig {
+    let base_url = if input.account_source.is_some() {
+        "account://echobird".into()
+    } else {
+        input.base_url.unwrap_or_default()
+    };
     let auto_type = detect_model_type(&base_url);
-    let internal_id = generate_internal_id();
-
-    let new_model = ModelConfig {
-        internal_id: internal_id.clone(),
+    ModelConfig {
+        internal_id,
         name: input.name.unwrap_or_default(),
         model_id: input.model_id,
         base_url,
-        api_key: input.api_key.unwrap_or_default(),
-        anthropic_url: input.anthropic_url,
+        api_key: if input.account_source.is_some() {
+            String::new()
+        } else {
+            input.api_key.unwrap_or_default()
+        },
+        account_source: input.account_source.clone(),
+        anthropic_url: if input.account_source.is_some() {
+            None
+        } else {
+            input.anthropic_url
+        },
         model_type: auto_type,
         openai_tested: None,
         anthropic_tested: None,
         openai_latency: None,
         anthropic_latency: None,
-        scope: input.scope,
-    };
-
-    log::info!(
-        "[ModelManager] Added model: {} ({})",
-        new_model.name,
-        internal_id
-    );
-    models.push(new_model.clone());
-    save_user_models(&models);
-    new_model
+        scope: if input.account_source.is_some() {
+            crate::models::model::ModelScope::SmartRouter
+        } else {
+            input.scope
+        },
+    }
 }
 
 /// Delete a user model by internal ID
@@ -535,6 +738,8 @@ pub struct UpdateModelInput {
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
+    pub account_source: Option<crate::models::model::AccountSource>,
+    #[serde(default)]
     pub model_id: Option<String>,
     #[serde(default)]
     pub openai_tested: Option<bool>,
@@ -546,44 +751,101 @@ pub struct UpdateModelInput {
     pub anthropic_latency: Option<f64>,
 }
 
-pub fn update_model(internal_id: &str, updates: UpdateModelInput) -> Option<ModelConfig> {
-    let mut models = get_user_models();
-    let index = models.iter().position(|m| m.internal_id == internal_id)?;
+pub fn update_model(
+    internal_id: &str,
+    updates: UpdateModelInput,
+) -> Result<Option<ModelConfig>, String> {
+    update_model_at(&models_config_path(), internal_id, updates)
+}
 
-    // Apply updates
-    if let Some(name) = updates.name {
-        models[index].name = name;
-    }
-    if let Some(url) = &updates.base_url {
-        models[index].base_url = url.clone();
-        models[index].model_type = detect_model_type(url);
-    }
-    if let Some(url) = updates.anthropic_url {
-        models[index].anthropic_url = if url.is_empty() { None } else { Some(url) };
-    }
-    if let Some(key) = updates.api_key {
-        models[index].api_key = key;
-    }
-    if let Some(id) = updates.model_id {
-        models[index].model_id = Some(id);
-    }
-    if let Some(v) = updates.openai_tested {
-        models[index].openai_tested = Some(v);
-    }
-    if let Some(v) = updates.anthropic_tested {
-        models[index].anthropic_tested = Some(v);
-    }
-    if let Some(v) = updates.openai_latency {
-        models[index].openai_latency = Some(v);
-    }
-    if let Some(v) = updates.anthropic_latency {
-        models[index].anthropic_latency = Some(v);
-    }
+fn update_model_at(
+    path: &std::path::Path,
+    internal_id: &str,
+    updates: UpdateModelInput,
+) -> Result<Option<ModelConfig>, String> {
+    let content = match fs::read(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Failed to read models: {error}")),
+    };
+    let mut models: Vec<ModelConfig> = serde_json::from_slice(&content)
+        .map_err(|error| format!("Failed to parse models: {error}"))?;
+    let Some(index) = models.iter().position(|m| m.internal_id == internal_id) else {
+        return Ok(None);
+    };
+    apply_model_updates(&mut models[index], updates);
 
     let updated = models[index].clone();
-    save_user_models(&models);
+    save_updated_models_at(path, &models)?;
     log::info!("[ModelManager] Updated model: {}", internal_id);
-    Some(updated)
+    Ok(Some(updated))
+}
+
+fn save_updated_models_at(path: &std::path::Path, models: &[ModelConfig]) -> Result<(), String> {
+    use std::io::Write;
+
+    let content = serde_json::to_vec_pretty(models)
+        .map_err(|error| format!("Failed to serialize models: {error}"))?;
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(&content)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result.map_err(|error| format!("Failed to save models: {error}"))
+}
+
+fn apply_model_updates(model: &mut ModelConfig, updates: UpdateModelInput) {
+    // Apply updates
+    if let Some(name) = updates.name {
+        model.name = name;
+    }
+    if let Some(url) = &updates.base_url {
+        model.base_url = url.clone();
+        model.model_type = detect_model_type(url);
+    }
+    if let Some(url) = updates.anthropic_url {
+        model.anthropic_url = if url.is_empty() { None } else { Some(url) };
+    }
+    if let Some(key) = updates.api_key {
+        model.api_key = key;
+    }
+    if let Some(id) = updates.model_id {
+        model.model_id = Some(id);
+    }
+    if let Some(source) = updates.account_source {
+        model.account_source = Some(source);
+    }
+    if model.account_source.is_some() {
+        model.api_key.clear();
+        model.base_url = "account://echobird".into();
+        model.anthropic_url = None;
+        model.scope = crate::models::model::ModelScope::SmartRouter;
+    }
+    if let Some(v) = updates.openai_tested {
+        model.openai_tested = Some(v);
+    }
+    if let Some(v) = updates.anthropic_tested {
+        model.anthropic_tested = Some(v);
+    }
+    if let Some(v) = updates.openai_latency {
+        model.openai_latency = Some(v);
+    }
+    if let Some(v) = updates.anthropic_latency {
+        model.anthropic_latency = Some(v);
+    }
 }
 
 // ─── Test & Ping ───
@@ -901,6 +1163,626 @@ mod tests {
     use super::*;
     use crate::models::model::ModelConfig;
 
+    #[test]
+    fn fingerprint_successful_native_probe_is_reused() {
+        let cache = std::sync::Mutex::new(None);
+        let calls = std::cell::Cell::new(0);
+        for _ in 0..8 {
+            let fingerprint = machine_fingerprint_with(
+                &cache,
+                || {
+                    calls.set(calls.get() + 1);
+                    Some("machine-guid-fixture".to_string())
+                },
+                || panic!("native success must not use fallback"),
+            );
+            assert_eq!(fingerprint, "machine-guid-fixture");
+        }
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn fingerprint_concurrent_cold_probes_are_coalesced() {
+        let cache = std::sync::Mutex::new(None);
+        let barrier = std::sync::Barrier::new(8);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        machine_fingerprint_with(
+                            &cache,
+                            || {
+                                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                Some("machine-guid-fixture".to_string())
+                            },
+                            || panic!("native success must not use fallback"),
+                        )
+                    })
+                })
+                .collect();
+            for handle in handles {
+                assert_eq!(handle.join().unwrap(), "machine-guid-fixture");
+            }
+        });
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fingerprint_native_failure_keeps_fallback_and_allows_recovery() {
+        let cache = std::sync::Mutex::new(None);
+        let calls = std::cell::Cell::new(0);
+        for hostname in ["first-hostname-fixture", "second-hostname-fixture"] {
+            assert_eq!(
+                machine_fingerprint_with(
+                    &cache,
+                    || {
+                        calls.set(calls.get() + 1);
+                        None
+                    },
+                    || hostname.to_string(),
+                ),
+                hostname
+            );
+            assert!(cache.lock().unwrap().is_none());
+        }
+        assert_eq!(calls.get(), 2);
+        assert_eq!(
+            machine_fingerprint_with(
+                &cache,
+                || Some("recovered-guid-fixture".to_string()),
+                || panic!("native recovery must not use fallback"),
+            ),
+            "recovered-guid-fixture"
+        );
+        assert_eq!(
+            machine_fingerprint_with(
+                &cache,
+                || panic!("recovered fingerprint must be reused"),
+                || panic!("native recovery must not use fallback"),
+            ),
+            "recovered-guid-fixture"
+        );
+    }
+
+    #[test]
+    fn fingerprint_empty_native_value_is_preserved_without_being_cached() {
+        let cache = std::sync::Mutex::new(None);
+        assert_eq!(
+            machine_fingerprint_with(
+                &cache,
+                || Some(String::new()),
+                || panic!("empty native value previously did not use fallback"),
+            ),
+            ""
+        );
+        assert!(cache.lock().unwrap().is_none());
+        assert_eq!(
+            machine_fingerprint_with(
+                &cache,
+                || Some("recovered-guid-fixture".to_string()),
+                || panic!("native recovery must not use fallback"),
+            ),
+            "recovered-guid-fixture"
+        );
+    }
+
+    #[test]
+    fn fingerprint_cache_preserves_identity_and_key_derivation() {
+        let fingerprint = "machine-guid-fixture";
+        let username = "user-fixture";
+        assert_eq!(
+            hex::encode(derive_encryption_key(&[7; 32], fingerprint, username).unwrap()),
+            "c3af0f14876eab798f214c4c93f25e8047143d266d84dfa5ae132f42c2411b9b"
+        );
+        assert_eq!(
+            hex::encode(
+                derive_encryption_key(&[7; 32], fingerprint, "other-user-fixture").unwrap()
+            ),
+            "dee1a0f181f4f249e626a564f8bb7e1076bbad5e8f380da67064952f584dc5be"
+        );
+        assert_eq!(
+            hex::encode(derive_encryption_key(&[8; 32], fingerprint, username).unwrap()),
+            "eb1ace1edd9e43b35c134f2b56f0cab454408be59292ee8dd0ed267831a399a9"
+        );
+        assert_eq!(ENCRYPTED_PREFIX, "enc:v1:");
+    }
+
+    struct FirstLaunchDirectory(std::path::PathBuf);
+
+    impl FirstLaunchDirectory {
+        fn new() -> Self {
+            Self(
+                std::env::temp_dir()
+                    .join(format!("echobird-first-launch-{}", uuid::Uuid::new_v4())),
+            )
+        }
+    }
+
+    impl Drop for FirstLaunchDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn first_launch_defaults_are_local_empty_key_router_models() {
+        let directory = FirstLaunchDirectory::new();
+        let defaults = prepare_initial_router_defaults_at(&directory.0)
+            .unwrap()
+            .unwrap();
+        assert!(!directory.0.exists());
+        assert_eq!(defaults.len(), 2);
+        assert_eq!(
+            defaults
+                .iter()
+                .map(|model| (
+                    model.internal_id.as_str(),
+                    model.name.as_str(),
+                    model.model_id.as_deref().unwrap(),
+                    model.base_url.as_str(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "router-default-kilo",
+                    "Kilo AI",
+                    "kilo-auto/free",
+                    "https://api.kilo.ai/api/gateway",
+                ),
+                (
+                    "router-default-zen-free",
+                    "OpenCode Zen Free",
+                    "big-pickle",
+                    "https://opencode.ai/inference/v1",
+                ),
+            ]
+        );
+        let catalog = super::super::free_model_directory::bundled_free_model_directory().unwrap();
+        for model in defaults {
+            assert!(model.api_key.is_empty());
+            assert!(model.account_source.is_none());
+            assert_eq!(model.scope, crate::models::model::ModelScope::SmartRouter);
+            assert!(super::super::free_model_directory::keyless_auth_in_catalog(
+                &catalog,
+                &model.base_url,
+                model.model_id.as_deref().unwrap()
+            )
+            .is_some());
+        }
+    }
+
+    #[test]
+    fn first_launch_allows_only_port_files_generated_before_router_start() {
+        let directory = FirstLaunchDirectory::new();
+        let config = directory.0.join("config");
+        fs::create_dir_all(&config).unwrap();
+        for name in ["anthropic-proxy-port.json", "musecode-proxy-port.json"] {
+            fs::write(config.join(name), r#"{"port":12345}"#).unwrap();
+        }
+        assert!(prepare_initial_router_defaults_at(&directory.0)
+            .unwrap()
+            .is_some());
+        fs::write(config.join(".encryption_key"), "legacy key").unwrap();
+        assert!(prepare_initial_router_defaults_at(&directory.0)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn existing_or_corrupt_data_never_receives_first_launch_defaults() {
+        for name in [
+            "settings.json",
+            "config/models.json",
+            "config/model-order.json",
+            "config/smart-router.json",
+            "kilo-accounts.json",
+            "cache/free-models.json",
+        ] {
+            let directory = FirstLaunchDirectory::new();
+            let path = directory.0.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "invalid existing content").unwrap();
+            assert!(prepare_initial_router_defaults_at(&directory.0)
+                .unwrap()
+                .is_none());
+            assert_eq!(
+                fs::read_to_string(path).unwrap(),
+                "invalid existing content"
+            );
+        }
+        let directory = FirstLaunchDirectory::new();
+        fs::write(&directory.0, "not a directory").unwrap();
+        assert!(prepare_initial_router_defaults_at(&directory.0).is_err());
+    }
+
+    #[test]
+    fn unreadable_or_invalid_preexisting_proxy_state_is_not_a_fresh_installation() {
+        let directory = FirstLaunchDirectory::new();
+        let config = directory.0.join("config");
+        fs::create_dir_all(&config).unwrap();
+        let port = config.join("anthropic-proxy-port.json");
+        for content in ["invalid", r#"{"port":0}"#, r#"{"port":999999}"#] {
+            fs::write(&port, content).unwrap();
+            assert!(prepare_initial_router_defaults_at(&directory.0).is_err());
+            assert_eq!(fs::read_to_string(&port).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn invalid_default_catalog_does_not_create_configuration() {
+        let directory = FirstLaunchDirectory::new();
+        for catalog in [
+            serde_json::Value::Null,
+            serde_json::json!({ "version": 1, "models": [] }),
+        ] {
+            assert!(persist_initial_router_defaults_at(&directory.0, &catalog).is_err());
+            assert!(!directory.0.exists());
+        }
+        let mut catalog =
+            super::super::free_model_directory::bundled_free_model_directory().unwrap();
+        catalog["models"][0]["notes"] = serde_json::json!("An API key is required.");
+        assert!(persist_initial_router_defaults_at(&directory.0, &catalog).is_err());
+        assert!(!directory.0.exists());
+
+        let mut catalog =
+            super::super::free_model_directory::bundled_free_model_directory().unwrap();
+        let zen = catalog["models"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["modelId"] == "big-pickle")
+            .unwrap();
+        zen["notes"] = serde_json::json!("An API key is required.");
+        assert!(persist_initial_router_defaults_at(&directory.0, &catalog).is_err());
+        assert!(!directory.0.exists());
+        catalog["models"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|entry| entry["providerId"] != "opencode-zen-free");
+        assert!(persist_initial_router_defaults_at(&directory.0, &catalog).is_err());
+        assert!(!directory.0.exists());
+    }
+
+    #[test]
+    fn resumed_default_initialization_keeps_existing_models_and_catalog() {
+        let directory = FirstLaunchDirectory::new();
+        let catalog = super::super::free_model_directory::bundled_free_model_directory().unwrap();
+        persist_initial_router_defaults_at(&directory.0, &catalog).unwrap();
+        let path = directory.0.join("config/models.json");
+        let mut models: Vec<ModelConfig> =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        models[0].name = "Kept saved name".to_string();
+        models[0].model_id = Some("kept-saved-model".to_string());
+        models.insert(0, mk_model("other-user-model"));
+        save_updated_models_at(&path, &models).unwrap();
+        let saved_models = fs::read(&path).unwrap();
+        let cache_path = directory.0.join("cache/free-models.json");
+        let saved_catalog = fs::read(&cache_path).unwrap();
+
+        persist_initial_router_defaults_at(&directory.0, &catalog).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), saved_models);
+        assert_eq!(fs::read(cache_path).unwrap(), saved_catalog);
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn deleted_defaults_do_not_return_on_later_launch() {
+        let directory = FirstLaunchDirectory::new();
+        let catalog = super::super::free_model_directory::bundled_free_model_directory().unwrap();
+        persist_initial_router_defaults_at(&directory.0, &catalog).unwrap();
+        let path = directory.0.join("config/models.json");
+        save_updated_models_at(&path, &[]).unwrap();
+        fs::write(
+            directory.0.join("config/smart-router.json"),
+            r#"{"candidateIds":[]}"#,
+        )
+        .unwrap();
+        assert!(prepare_initial_router_defaults_at(&directory.0)
+            .unwrap()
+            .is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[]");
+        fs::remove_file(path).unwrap();
+        assert!(prepare_initial_router_defaults_at(&directory.0)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn failed_default_write_can_resume_without_duplicates() {
+        let directory = FirstLaunchDirectory::new();
+        let catalog = super::super::free_model_directory::bundled_free_model_directory().unwrap();
+        fs::create_dir_all(&directory.0).unwrap();
+        fs::write(directory.0.join("config"), "blocking file").unwrap();
+        assert!(persist_initial_router_defaults_at(&directory.0, &catalog).is_err());
+        assert_eq!(
+            fs::read_to_string(directory.0.join("config")).unwrap(),
+            "blocking file"
+        );
+        fs::remove_file(directory.0.join("config")).unwrap();
+        persist_initial_router_defaults_at(&directory.0, &catalog).unwrap();
+        persist_initial_router_defaults_at(&directory.0, &catalog).unwrap();
+        let models: Vec<ModelConfig> =
+            serde_json::from_slice(&fs::read(directory.0.join("config/models.json")).unwrap())
+                .unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].internal_id, "router-default-kilo");
+        assert_eq!(models[1].internal_id, "router-default-zen-free");
+    }
+
+    #[test]
+    fn pending_default_initialization_preserves_corrupt_user_data() {
+        let directory = FirstLaunchDirectory::new();
+        let catalog = super::super::free_model_directory::bundled_free_model_directory().unwrap();
+        let path = directory.0.join("config/models.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "invalid saved models").unwrap();
+        assert!(persist_initial_router_defaults_at(&directory.0, &catalog).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "invalid saved models");
+        assert!(!directory.0.join("cache").exists());
+        fs::remove_file(path).unwrap();
+        let cache_path = directory.0.join("cache/free-models.json");
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, "invalid saved catalog").unwrap();
+        assert!(persist_initial_router_defaults_at(&directory.0, &catalog).is_err());
+        assert_eq!(
+            fs::read_to_string(cache_path).unwrap(),
+            "invalid saved catalog"
+        );
+        assert!(!directory.0.join("config/models.json").exists());
+    }
+
+    #[test]
+    fn cache_write_failure_preserves_models_and_can_resume_initialization() {
+        let directory = FirstLaunchDirectory::new();
+        let catalog = super::super::free_model_directory::bundled_free_model_directory().unwrap();
+        let path = directory.0.join("config/models.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        save_updated_models_at(&path, &[mk_model("other-user-model")]).unwrap();
+        let previous = fs::read(&path).unwrap();
+        fs::write(directory.0.join("cache"), "blocking cache file").unwrap();
+        assert!(persist_initial_router_defaults_at(&directory.0, &catalog).is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(
+            fs::read_to_string(directory.0.join("cache")).unwrap(),
+            "blocking cache file"
+        );
+        fs::remove_file(directory.0.join("cache")).unwrap();
+        persist_initial_router_defaults_at(&directory.0, &catalog).unwrap();
+        persist_initial_router_defaults_at(&directory.0, &catalog).unwrap();
+        let models: Vec<ModelConfig> = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].internal_id, "other-user-model");
+        assert_eq!(models[1].internal_id, "router-default-kilo");
+        assert_eq!(models[2].internal_id, "router-default-zen-free");
+        assert!(directory.0.join("cache/free-models.json").is_file());
+    }
+
+    struct ModelFile(std::path::PathBuf);
+
+    impl ModelFile {
+        fn new(models: &[ModelConfig]) -> Self {
+            let directory = std::env::temp_dir()
+                .join(format!("echobird-model-update-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("models.json");
+            fs::write(&path, serde_json::to_vec_pretty(models).unwrap()).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for ModelFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.0.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn model_id_updates_persist_without_changing_other_model_fields_or_order() {
+        use crate::models::model::{AccountProvider, AccountSource, ModelScope};
+
+        let mut api_model = new_model_from(
+            AddModelInput {
+                name: Some("Saved API model".into()),
+                base_url: Some("https://api.example/v1".into()),
+                anthropic_url: Some("https://api.example/anthropic".into()),
+                api_key: Some("enc:v1:saved-credential".into()),
+                model_id: Some("old-api-model".into()),
+                ..Default::default()
+            },
+            "api-model".into(),
+        );
+        api_model.openai_tested = Some(true);
+        api_model.openai_latency = Some(123.0);
+        let account_model = new_model_from(
+            AddModelInput {
+                name: Some("Saved account model".into()),
+                account_source: Some(AccountSource {
+                    provider: AccountProvider::Codex,
+                    account_id: "saved-account".into(),
+                }),
+                model_id: Some("old-account-model".into()),
+                scope: ModelScope::SmartRouter,
+                ..Default::default()
+            },
+            "account-model".into(),
+        );
+        let models = vec![api_model, account_model];
+        let fixture = ModelFile::new(&models);
+        let mut expected = serde_json::to_value(&models).unwrap();
+
+        for (index, internal_id, model_id) in [
+            (0, "api-model", "updated-api-model"),
+            (1, "account-model", "updated-account-model"),
+        ] {
+            let updated = update_model_at(
+                &fixture.0,
+                internal_id,
+                UpdateModelInput {
+                    model_id: Some(model_id.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+            expected[index]["modelId"] = serde_json::json!(model_id);
+            assert_eq!(serde_json::to_value(updated).unwrap(), expected[index]);
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(&fixture.0).unwrap()).unwrap();
+            assert_eq!(saved, expected);
+        }
+        assert_eq!(
+            fs::read_dir(fixture.0.parent().unwrap()).unwrap().count(),
+            1
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_model_update_preserves_saved_bytes_and_cleans_staged_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let fixture = ModelFile::new(&[mk_model("saved")]);
+        let previous = fs::read(&fixture.0).unwrap();
+        // Allow reads while denying replacement of the saved file.
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&fixture.0)
+            .unwrap();
+        let update = || UpdateModelInput {
+            model_id: Some("new-model".into()),
+            ..Default::default()
+        };
+        let error = update_model_at(&fixture.0, "saved", update()).unwrap_err();
+        assert!(error.starts_with("Failed to save models:"));
+        assert_eq!(fs::read(&fixture.0).unwrap(), previous);
+        assert_eq!(
+            fs::read_dir(fixture.0.parent().unwrap()).unwrap().count(),
+            1
+        );
+
+        drop(lock);
+        let updated = update_model_at(&fixture.0, "saved", update())
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.model_id.as_deref(), Some("new-model"));
+        assert_ne!(fs::read(&fixture.0).unwrap(), previous);
+    }
+
+    #[test]
+    fn missing_model_update_does_not_rewrite_the_saved_list() {
+        let fixture = ModelFile::new(&[mk_model("saved")]);
+        let previous = fs::read(&fixture.0).unwrap();
+        let updated = update_model_at(
+            &fixture.0,
+            "missing",
+            UpdateModelInput {
+                model_id: Some("new-model".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(updated.is_none());
+        assert_eq!(fs::read(&fixture.0).unwrap(), previous);
+    }
+
+    #[test]
+    fn invalid_saved_model_list_is_not_overwritten_by_an_update() {
+        let fixture = ModelFile::new(&[]);
+        let previous = b"not a model list";
+        fs::write(&fixture.0, previous).unwrap();
+        let error = update_model_at(
+            &fixture.0,
+            "saved",
+            UpdateModelInput {
+                model_id: Some("new-model".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.starts_with("Failed to parse models:"));
+        assert_eq!(fs::read(&fixture.0).unwrap(), previous);
+    }
+
+    #[test]
+    fn account_model_add_and_update_discard_api_credentials_and_force_router_scope() {
+        use crate::models::model::{AccountProvider, AccountSource, ModelScope};
+        let source = AccountSource {
+            provider: AccountProvider::Codex,
+            account_id: "saved-id".into(),
+        };
+        let mut model = new_model_from(
+            AddModelInput {
+                account_source: Some(source.clone()),
+                base_url: Some("https://untrusted.example/v1".into()),
+                anthropic_url: Some("https://untrusted.example/anthropic".into()),
+                api_key: Some("must-never-be-stored".into()),
+                scope: ModelScope::ModelCenter,
+                model_id: Some("model".into()),
+                ..Default::default()
+            },
+            "fixture".into(),
+        );
+        assert_eq!(model.scope, ModelScope::SmartRouter);
+        assert_eq!(model.base_url, "account://echobird");
+        assert!(model.anthropic_url.is_none());
+        assert!(model.api_key.is_empty());
+        assert_eq!(model.account_source, Some(source.clone()));
+        apply_model_updates(
+            &mut model,
+            UpdateModelInput {
+                base_url: Some("https://another.example".into()),
+                anthropic_url: Some("https://another.example/anthropic".into()),
+                api_key: Some("also-discarded".into()),
+                name: Some("New name".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(model.name, "New name");
+        assert_eq!(model.account_source, Some(source));
+        assert_eq!(model.base_url, "account://echobird");
+        assert!(model.api_key.is_empty());
+        assert!(model.anthropic_url.is_none());
+        assert_eq!(model.scope, ModelScope::SmartRouter);
+    }
+
+    #[test]
+    fn converting_api_model_to_account_source_discards_old_api_credentials() {
+        use crate::models::model::{AccountProvider, AccountSource, ModelScope};
+        let mut model = new_model_from(
+            AddModelInput {
+                base_url: Some("https://api.example/v1".into()),
+                api_key: Some("old-api-key".into()),
+                anthropic_url: Some("https://api.example/anthropic".into()),
+                model_id: Some("old-model".into()),
+                ..Default::default()
+            },
+            "existing".into(),
+        );
+        assert_eq!(model.scope, ModelScope::ModelCenter);
+        assert_eq!(model.api_key, "old-api-key");
+        assert!(model.account_source.is_none());
+        apply_model_updates(
+            &mut model,
+            UpdateModelInput {
+                account_source: Some(AccountSource {
+                    provider: AccountProvider::WorkBuddy,
+                    account_id: "saved-id".into(),
+                }),
+                model_id: Some("account-model".into()),
+                ..Default::default()
+            },
+        );
+        assert!(model.api_key.is_empty());
+        assert_eq!(model.base_url, "account://echobird");
+        assert!(model.anthropic_url.is_none());
+        assert_eq!(model.scope, ModelScope::SmartRouter);
+        assert_eq!(model.model_id.as_deref(), Some("account-model"));
+    }
+
     fn mk_model(id: &str) -> ModelConfig {
         ModelConfig {
             internal_id: id.to_string(),
@@ -908,6 +1790,7 @@ mod tests {
             model_id: None,
             base_url: String::new(),
             api_key: String::new(),
+            account_source: None,
             anthropic_url: None,
             model_type: None,
             openai_tested: None,

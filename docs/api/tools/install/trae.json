@@ -1,0 +1,41 @@
+{
+    "id": "trae",
+    "displayName": "TRAE",
+    "homepage": "https://www.trae.ai/",
+    "docs": "https://docs.trae.ai/ide/models",
+    "kind": "desktop_app",
+    "platforms": ["windows", "macos", "linux"],
+    "install": {
+        "version_manifest": "https://icube-normal.trae.ai/icube/api/v1/native/version/trae/latest",
+        "windows_download": "Read data.manifest.win32.download from the current official version manifest and select the nonempty x64 URL for the user's region.",
+        "macos_download": "Read data.manifest.darwin.download and select apple for Apple Silicon or intel for an Intel Mac.",
+        "linux_download": "Read data.manifest.linux.download and select x64.deb / arm64.deb or x64.rpm / arm64.rpm for the system's architecture and package manager.",
+        "note": "This entry installs the international desktop coding client with IDE and Agent modes. Use data.manifest, not the separate data.solo workplace product or data.tob enterprise product. Always resolve the current download URL; never pin an old version or change editions to work around a download failure."
+    },
+    "install_flow": {
+        "summary": "Detect installation and platform -> resolve the latest official package -> download -> install -> verify the regional desktop executable.",
+        "agent_steps": [
+            "Detect existing TRAE, OS, architecture and OS version first. Do not reinstall a working desktop client. Windows: registry DisplayName exactly Trae; default %LOCALAPPDATA%\\Programs\\Trae\\Trae.exe. macOS: /Applications/Trae.app or ~/Applications/Trae.app. Linux: /usr/share/trae/trae, /usr/bin/trae and trae.desktop.",
+            "Fetch install.version_manifest as JSON over HTTPS. Require success=true and data.manifest; use only its win32, darwin or linux download array. Windows supports x64; macOS supports apple (arm64) and intel (x64); Linux supports x64 and arm64. If the current manifest has no matching architecture, report that limitation. macOS requires 12.0 or later; Windows requires Windows 10 or later.",
+            "Select a nonempty architecture URL in the requested product's download array. Prefer region=cn for mainland China, va for the Americas and sg elsewhere, then another available official region for the same edition. Require HTTPS and an official trae.ai, trae.com.cn or traecdn.us download host. Download to the user's Downloads directory using a native download command. Do not use data.solo or data.tob. If the manifest fails, recheck https://www.trae.ai/download for the current official manifest; do not guess a versioned package URL.",
+            "Windows x64: verify the downloaded installer's Authenticode signature. Install automatically with Start-Process -FilePath <installer> -ArgumentList '/VERYSILENT', '/NORESTART', '/MERGETASKS=!runcode' -WindowStyle Hidden -Wait -PassThru. Check the exit code and resolve Trae.exe through the registry. If interactive setup is required, report the remaining step and do not claim installation succeeded.",
+            "macOS: mount the downloaded DMG read-only with hdiutil attach -readonly -nobrowse. Locate Trae.app in the mounted volume, copy it to ~/Applications using ditto, then detach the volume. Verify its code signature, Gatekeeper assessment and Contents/Info.plist executable before launching. Preserve an existing installation's location when updating.",
+            "Linux: install the matching downloaded .deb with apt or .rpm with dnf / zypper. Confirm package-manager success, /usr/share/trae/trae and the trae.desktop entry. Do not install a package built for another architecture. If the distribution has no compatible package manager, report the limitation.",
+            "Refresh EchoBird tool detection and verify it resolves the installed TRAE desktop executable. Launch through EchoBird's normal desktop entry. Report the installed version and full application path; a completed download alone does not establish installation."
+        ],
+        "tell_user": [
+            "Installed regional desktop version and full application path, or the exact remaining installation step.",
+            "The desktop client is available from EchoBird's TRAE entry."
+        ]
+    },
+    "identity_guard": {
+        "description": "TRAE (trae) is the international desktop coding client from trae.ai. Its manifest uses TRAE-* packages and its native application is Trae / trae. TRAE CN (traecn) is the independent China-region client with separate account and application data."
+    },
+    "network_requirements": {
+        "test_urls": [
+            "https://www.trae.ai/download",
+            "https://icube-normal.trae.ai/icube/api/v1/native/version/trae/latest"
+        ],
+        "mirrors": {}
+    }
+}

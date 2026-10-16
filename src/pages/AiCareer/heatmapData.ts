@@ -64,8 +64,8 @@ export function entriesToBuckets(entries: HeatmapEntry[]): DayBuckets {
 }
 
 // Build the WEEKS×DAYS grid ending on the current week, with per-cell level.
-export function buildGrid(buckets: DayBuckets): DayCell[][] {
-  const today = new Date();
+export function buildGrid(buckets: DayBuckets, now = new Date()): DayCell[][] {
+  const today = new Date(now);
   today.setHours(0, 0, 0, 0);
   const endDate = new Date(today);
   endDate.setDate(endDate.getDate() + (6 - today.getDay()));

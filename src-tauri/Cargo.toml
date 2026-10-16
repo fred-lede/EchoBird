@@ -1,6 +1,6 @@
 [package]
 name = "echobird"
-version = "5.9.1"
+version = "5.9.5"
 description = "The Nexus for Models, Agents & Vibe Coding"
 authors = ["Echobird Team"]
 license = "MIT"
@@ -44,7 +44,10 @@ tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 plist = "1"
-jsonc-parser = { version = "0.33.1", features = ["serde"] }
+jsonc-parser = { version = "0.33.1", features = ["serde", "cst", "serde_json"] }
+# Qoder desktop stores model selection in LevelDB on all supported platforms;
+# Cline Desktop also uses it on Windows.
+rusty-leveldb = "4.0.1"
 # YAML read-merge-write for DeepSeek Harness (`~/.dsh/settings.yaml` +
 # `.credentials.yaml`). serde_yaml is archived; this is the maintained fork.
 serde_yaml_ng = "0.10"
@@ -75,13 +78,17 @@ pbkdf2 = "0.12"
 sha1 = "0.10"
 hmac = "0.12"
 sha2 = "0.10"
+md-5 = "0.10"
+rsa = { version = "0.9", features = ["pem"] }
 hex = "0.4"
+ring = "0.17"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "gzip"], default-features = false }
 url = "2"
 rand = "0.8"
 futures-util = "0.3"
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
 
 # Local HTTP servers for the Anthropic model-id router and smart router.
 axum = "0.8"
@@ -120,9 +127,7 @@ libc = "0.2"
 zbus = "5.16"
 
 [target.'cfg(windows)'.dependencies]
-# Cline Desktop stores its model selection in WebView2's native Local Storage.
-rusty-leveldb = "4.0.1"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Com", "Win32_UI_Shell", "Win32_Security_Cryptography", "ApplicationModel_Core", "Management_Deployment"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Com", "Win32_System_Threading", "Win32_UI_Shell", "Win32_Security_Cryptography", "ApplicationModel_Core", "Management_Deployment"] }
 raw-window-handle = "0.6"
 # Registry scan for tool detection — read DisplayName/InstallLocation/DisplayIcon
 # from HKLM + HKCU Uninstall keys so we find apps installed to non-default paths.

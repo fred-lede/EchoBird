@@ -1,6 +1,6 @@
 {
-    "docs": "https://code.visualstudio.com/docs/setup/setup-overview",
-    "configFile": "~/.vscode/settings.json",
+    "docs": "https://code.visualstudio.com/docs/agent-customization/language-models",
+    "configFile": "~/.config/Code/User/settings.json",
     "format": "json",
     "custom": false
 }

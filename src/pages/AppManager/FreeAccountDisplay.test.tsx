@@ -11,10 +11,23 @@ import { GrokAccountSection } from './GrokAccountSection';
 import { ManusAccountSection } from './ManusAccountSection';
 import { WorkBuddyAccountSection } from './WorkBuddyAccountSection';
 import { ZCodeAccountSection } from './ZCodeAccountSection';
+import { ClineAccountSection } from './ClineAccountSection';
+import { ClientAccountSection } from './ClientAccountSection';
+import { DeepSeekAccountSection } from './DeepSeekAccountSection';
+import { MinimaxAccountSection } from './MinimaxAccountSection';
+import { QoderAccountSection } from './QoderAccountSection';
+import { en } from '../../i18n/en';
+import zhHans from '../../i18n/zh-Hans';
 
 let state: AppManagerContextType;
+let missingLabel = 'model.noUsageData';
 vi.mock('./context', () => ({ useAppManager: () => state }));
-vi.mock('../../hooks/useI18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
+vi.mock('../../hooks/useI18n', () => ({
+  useI18n: () => ({
+    t: (key: string) => (key === 'model.noUsageData' ? missingLabel : key),
+    locale: 'en',
+  }),
+}));
 vi.mock('../../components', () => ({ EffortPulse: () => null, getModelIcon: () => null }));
 
 const sections = {
@@ -29,11 +42,18 @@ const sections = {
   antigravity: () => <AntigravityAccountSection />,
   workbuddy: () => <WorkBuddyAccountSection />,
   zcode: () => <ZCodeAccountSection />,
+  cline: () => <ClineAccountSection />,
+  kilo: () => <ClientAccountSection provider="kilo" />,
+  copilot: () => <ClientAccountSection provider="copilot" />,
+  dsh: () => <DeepSeekAccountSection />,
+  minimax: () => <MinimaxAccountSection />,
+  qoder: () => <QoderAccountSection />,
 };
 type Tool = keyof typeof sections;
 const row = () => ({
   id: 'saved',
   email: 'free@example.test',
+  login: 'free@example.test',
   name: 'Free user',
   active: true,
   plan: 'FREE',
@@ -45,10 +65,13 @@ const row = () => ({
   resetAt: null,
   expiresAt: null,
   quotas: [],
+  quotaWindows: [],
+  balances: null,
   usage: { plan: 'FREE', remainingPercent: null, resetAt: null },
   credits: null,
 });
 beforeEach(() => {
+  missingLabel = 'model.noUsageData';
   const account = row();
   const group = {
     accounts: [account],
@@ -63,6 +86,7 @@ beforeEach(() => {
     remove: vi.fn(),
     claimDaily: vi.fn(),
   };
+  const emptyGroup = { ...group, accounts: [] };
   state = {
     detectedTools: [],
     isLaunching: false,
@@ -83,13 +107,21 @@ beforeEach(() => {
     cursorAccounts: group,
     grokBotAccounts: group,
     grokAccounts: group,
+    clineAccounts: group,
+    kiloAccounts: group,
+    copilotAccounts: group,
     manusAccounts: group,
     cueAccounts: group,
     antigravityAccounts: group,
     workBuddyAccounts: group,
     workBuddyAccountGroups: { workbuddy: group, workbuddyai: group },
+    traeAccountGroups: { trae: { ...group, accounts: [] }, traecn: { ...group, accounts: [] } },
+    kiroAccounts: { ...group, accounts: [] },
     zcodeAccounts: { ...group, provider: 'bigmodel', setProvider: vi.fn() },
-    deepSeekAccounts: { ...group, accounts: [] },
+    minimaxAccounts: { ...group, region: 'cn', setRegion: vi.fn() },
+    qoderAccounts: group,
+    qoderAccountGroups: { qoder: group, qodercn: emptyGroup },
+    deepSeekAccounts: group,
   } as unknown as AppManagerContextType;
 });
 function markup(tool: Tool) {
@@ -102,8 +134,9 @@ function markup(tool: Tool) {
 it.each(Object.keys(sections) as Tool[])(
   '%s: shows Free and the shared missing-usage message in both account views',
   (tool) => {
+    if (tool === 'minimax') state.minimaxAccounts.accounts[0].plan = 'M Plan Free';
     for (const html of markup(tool)) {
-      expect(html).toContain('>Free<');
+      if (tool !== 'dsh') expect(html).toContain('>Free<');
       expect(html).toContain('>model.noUsageData<');
       expect(html).not.toContain('>—<');
       expect(html).not.toContain('role="progressbar"');
@@ -111,9 +144,39 @@ it.each(Object.keys(sections) as Tool[])(
     }
   }
 );
+it.each(['Pro', null])(
+  'shows the same localized missing-usage status for plan %s in both views',
+  (plan) => {
+    state.codexAccounts[0].plan = plan ?? undefined;
+    state.cursorAccounts.accounts[0].usage!.plan = plan ?? '';
+    for (const tool of Object.keys(sections) as Tool[]) {
+      const [desktop, card] = markup(tool);
+      for (const html of [desktop, card]) {
+        expect(html).toContain('model.noUsageData');
+        expect(html).not.toContain('role="progressbar"');
+        expect(html).not.toContain('>0%<');
+      }
+      expect(desktop).toContain('grid h-12');
+      expect(card).toContain('flex h-44 flex-col gap-2 rounded-card');
+    }
+  }
+);
+it.each([en, zhHans])(
+  'uses the existing locale translation for every unknown account quota',
+  (translations) => {
+    missingLabel = translations['model.noUsageData']!;
+    for (const tool of Object.keys(sections) as Tool[]) {
+      for (const html of markup(tool)) {
+        expect(html).toContain(missingLabel);
+        expect(html).not.toContain('model.noUsageData');
+      }
+    }
+  }
+);
 it.each(Object.keys(sections).filter((tool) => tool !== 'grok') as Tool[])(
   '%s: retains genuine zero usage for a Free account',
   (tool) => {
+    if (tool === 'minimax') state.minimaxAccounts.accounts[0].plan = 'M Plan Free';
     Object.assign(state.codexAccounts[0], {
       quotaPercent: 0,
       remainingPercent: 0,
@@ -121,12 +184,20 @@ it.each(Object.keys(sections).filter((tool) => tool !== 'grok') as Tool[])(
       baseRemaining: 0,
       baseTotal: 100,
       fiveHour: { remainingPercent: 0 },
-      quotas: [{ name: 'gemini-3', remainingPercent: 0 }],
+      sevenDay: { remainingPercent: 0 },
+      quotas: [
+        { name: 'gemini-3', remainingPercent: 0 },
+        { name: 'claude', remainingPercent: 0 },
+      ],
       usage: { plan: 'FREE', remainingPercent: 0 },
       credits: { total: 0 },
+      balanceMicros: 0,
+      balance: 0,
+      balances: [{ currency: 'USD', amount: 0 }],
+      quota: { credits: 0, windows: [] },
     });
     for (const html of markup(tool)) {
-      expect(html).toContain('>Free<');
+      if (tool !== 'dsh') expect(html).toContain('>Free<');
       expect(html).not.toContain('>model.noUsageData<');
       expect(html.replace(/<[^>]*>/g, ' ')).toMatch(/\b0(?:%|\b)/);
     }

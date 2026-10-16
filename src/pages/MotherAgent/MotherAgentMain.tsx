@@ -6,17 +6,21 @@ import { PendingChipsRow } from '../../components/PendingChipsRow';
 import { ChatBubble, ToolCallCard } from '../../components/chat';
 import { buildPendingMessage } from '../../utils/buildPendingMessage';
 import { useI18n } from '../../hooks/useI18n';
-import { useToast } from '../../components/Toast';
 import * as api from '../../api/tauri';
 import { useNavigationStore } from '../../stores/navigationStore';
 import { useDocumentVisible } from '../../hooks/useDocumentVisible';
 import { useMotherAgent } from './context';
+import { QuickCommandChips } from './QuickCommandChips';
+import { ReasoningControl } from './ReasoningControl';
 import { MA_PAGE_SIZE, type ChatMessage } from './types';
+
+function isVisibleMessage(message: ChatMessage) {
+  return message.type !== 'tool_call' || !message.name.startsWith('memory_');
+}
 
 // ===== Main Content (center area) — CHAT =====
 export function MotherAgentMain() {
   const { t } = useI18n();
-  const { showToast } = useToast();
   const {
     models,
     agentModel,
@@ -25,7 +29,11 @@ export function MotherAgentMain() {
     setChatInput,
     chatOutput,
     isProcessing,
+    isResetting,
     agentModelData: _agentModelData,
+    reasoningLevels,
+    reasoningEffort,
+    setReasoningEffort,
     agentState: _agentState,
     chatEndRef,
     chatInputRef,
@@ -34,7 +42,7 @@ export function MotherAgentMain() {
 
     sshServers: _sshServers,
     selectedServerId,
-    clearChat,
+    activeConversationId,
     abortAgent,
     maDiskTotal,
     loadOlderChat,
@@ -42,6 +50,7 @@ export function MotherAgentMain() {
     setParasiteAgent,
     parasiteAvailable,
   } = useMotherAgent();
+  const visibleChatOutput = React.useMemo(() => chatOutput.filter(isVisibleMessage), [chatOutput]);
 
   // Build model list for RemoteModelSelector (with icons)
   const modelList: ModelOption[] = React.useMemo(
@@ -67,13 +76,6 @@ export function MotherAgentMain() {
     return () => clearTimeout(id);
   }, [chatOutput]);
 
-  // Listen for clear-chat event from title bar
-  useEffect(() => {
-    const handler = () => clearChat();
-    window.addEventListener('clear-chat', handler);
-    return () => window.removeEventListener('clear-chat', handler);
-  }, [clearChat]);
-
   const [_serverModel, setServerModel] = useState<string | null>(null);
   const _fileInputRef = useRef<HTMLInputElement>(null!);
   const _imageInputRef = useRef<HTMLInputElement>(null!);
@@ -81,6 +83,11 @@ export function MotherAgentMain() {
   const [pendingFiles, setPendingFiles] = useState<
     Array<{ id: string; name: string; type: 'file' | 'image'; preview?: string }>
   >([]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPendingFiles([]);
+  }, [activeConversationId, selectedServerId]);
 
   // Wrap handleChatSend to append pending file info as text
   const localSend = useCallback(() => {
@@ -154,6 +161,7 @@ export function MotherAgentMain() {
   const PAGE_SIZE = MA_PAGE_SIZE;
   const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
   const [showSkeleton, setShowSkeleton] = useState(false);
+  const paginationGenerationRef = useRef(0);
 
   // Re-snap to bottom every time the user opens this page — not just on first
   // hydration (the component stays mounted via CSS hidden, so a one-shot
@@ -167,13 +175,15 @@ export function MotherAgentMain() {
     setShowScrollBtn(false);
   }, []);
 
-  // Reset pagination + re-arm sticky when the server changes
+  // Reset pagination + re-arm sticky when the conversation changes
   useEffect(() => {
+    paginationGenerationRef.current += 1;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setDisplayCount(PAGE_SIZE);
+    setShowSkeleton(false);
     stickToBottomRef.current = true;
     requestAnimationFrame(snapToBottom);
-  }, [selectedServerId, snapToBottom, PAGE_SIZE]);
+  }, [selectedServerId, activeConversationId, snapToBottom, PAGE_SIZE]);
 
   // Re-arm sticky + snap whenever the page becomes active
   useEffect(() => {
@@ -202,7 +212,7 @@ export function MotherAgentMain() {
     return () => ro.disconnect();
   }, [snapToBottom]);
 
-  const handleScroll = () => {
+  const handleScroll = async () => {
     const container = chatContainerRef.current;
     if (!container) return;
     const distanceFromBottom =
@@ -212,19 +222,21 @@ export function MotherAgentMain() {
     // at distance≈0, so they correctly keep sticky=true; user wheel/drag
     // away from the bottom flips it off.
     stickToBottomRef.current = isNearBottom;
-    setShowScrollBtn(!isNearBottom && chatOutput.length > 0);
+    setShowScrollBtn(!isNearBottom && visibleChatOutput.length > 0);
 
     if (container.scrollTop !== 0) return;
+    const generation = paginationGenerationRef.current;
 
     // Phase 1: more in-memory messages to show
-    if (displayCount < chatOutput.length) {
+    if (displayCount < visibleChatOutput.length) {
       setShowSkeleton(true);
       const prevScrollHeight = container.scrollHeight;
       setTimeout(() => {
+        if (generation !== paginationGenerationRef.current) return;
         setShowSkeleton(false);
-        setDisplayCount((c) => Math.min(c + PAGE_SIZE, chatOutput.length));
+        setDisplayCount((c) => Math.min(c + PAGE_SIZE, visibleChatOutput.length));
         requestAnimationFrame(() => {
-          if (chatContainerRef.current) {
+          if (generation === paginationGenerationRef.current && chatContainerRef.current) {
             chatContainerRef.current.scrollTop =
               chatContainerRef.current.scrollHeight - prevScrollHeight;
           }
@@ -239,21 +251,30 @@ export function MotherAgentMain() {
 
     setShowSkeleton(true);
     const prevScrollHeight2 = container.scrollHeight;
-    loadOlderChat()
-      .then((older) => {
-        setShowSkeleton(false);
-        if (older.length === 0) return;
-        setDisplayCount((c) => c + older.length);
-        requestAnimationFrame(() => {
-          if (chatContainerRef.current) {
-            chatContainerRef.current.scrollTop =
-              chatContainerRef.current.scrollHeight - prevScrollHeight2;
-          }
-        });
-      })
-      .catch(() => {
-        setShowSkeleton(false);
+    try {
+      let loaded = alreadyLoaded;
+      let visibleLoaded = 0;
+      while (loaded < maDiskTotal) {
+        const older = await loadOlderChat();
+        if (generation !== paginationGenerationRef.current) return;
+        if (older.length === 0) break;
+        loaded += older.length;
+        visibleLoaded = older.filter(isVisibleMessage).length;
+        if (visibleLoaded > 0) break;
+      }
+      setShowSkeleton(false);
+      if (visibleLoaded === 0) return;
+      setDisplayCount((c) => c + visibleLoaded);
+      requestAnimationFrame(() => {
+        if (generation === paginationGenerationRef.current && chatContainerRef.current) {
+          chatContainerRef.current.scrollTop =
+            chatContainerRef.current.scrollHeight - prevScrollHeight2;
+        }
       });
+    } catch {
+      if (generation !== paginationGenerationRef.current) return;
+      setShowSkeleton(false);
+    }
   };
 
   const scrollToBottom = useCallback(() => {
@@ -262,6 +283,8 @@ export function MotherAgentMain() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatEndRef]);
 
+  const showWelcome = visibleChatOutput.length === 0 && !isProcessing;
+
   return (
     <div className="flex flex-col h-full">
       {/* Chat conversation area */}
@@ -269,78 +292,100 @@ export function MotherAgentMain() {
         <div
           ref={chatContainerRef}
           onScroll={handleScroll}
-          className="absolute inset-0 overflow-y-auto slim-scroll p-4"
+          className={`absolute inset-0 overflow-y-auto slim-scroll ${showWelcome ? 'py-4' : 'p-4'}`}
         >
-          {/* Chat messages — markdown stream */}
-          <div className="pt-2 pb-2">
-            {/* Skeleton placeholders — shown briefly when lazy-loading older messages */}
-            {showSkeleton &&
-              [0, 1, 2].map((i) => (
-                <ChatBubble key={`sk-${i}`} role="skeleton" content="" variant="mother" />
-              ))}
-            {chatOutput.slice(-displayCount).map((msg, i, arr) => {
-              if (msg.type === 'user') {
-                return (
-                  <ChatBubble
-                    key={i}
-                    role="user"
-                    content={msg.text}
-                    variant="mother"
-                    chips={msg.chips}
+          {showWelcome ? (
+            <div className="grid min-h-full grid-rows-[minmax(0,0.35fr)_auto_minmax(0,0.65fr)]">
+              <div className="row-start-2 flex flex-col items-center gap-7">
+                <div className="flex items-center gap-3">
+                  <img
+                    src="/brand/bird.png"
+                    alt=""
+                    aria-hidden="true"
+                    draggable={false}
+                    className="h-12 w-12 select-none"
                   />
-                );
-              }
-              if (msg.type === 'tool_call') {
-                return (
-                  <ToolCallCard
-                    key={`${i}-${msg.id}`}
-                    name={msg.name}
-                    args={msg.args}
-                    status={msg.status}
-                    output={msg.output}
-                  />
-                );
-              }
-              if (msg.type === 'assistant') {
-                const isLast = arr.slice(i + 1).every((m) => m.type !== 'assistant');
-                const lastOutput = chatOutput[chatOutput.length - 1];
-                const isCurrentResponse = isLast && lastOutput?.type === 'assistant';
-                return (
-                  <ChatBubble
-                    key={i}
-                    role="assistant"
-                    content={msg.text}
-                    variant="mother"
-                    isStreaming={isProcessing && isCurrentResponse}
-                  />
-                );
-              }
-              if (msg.type === 'cancelled') {
-                const text = msg.i18nKey
-                  ? t(msg.i18nKey as import('../../i18n/types').TKey)
-                  : msg.text;
-                return (
-                  <div key={i} className="flex justify-center my-4">
-                    <span className="text-cyber-text-muted/35 text-xs font-mono">{text}</span>
-                  </div>
-                );
-              }
-              if (msg.type === 'error') {
-                const text = msg.i18nKey
-                  ? t(msg.i18nKey as import('../../i18n/types').TKey)
-                  : msg.text;
-                return <ChatBubble key={i} role="error" content={text} variant="mother" />;
-              }
-              return null;
-            })}
-            {/* Typing indicator — show when processing and no new assistant response has started */}
-            {isProcessing &&
-              (chatOutput.length === 0 ||
-                chatOutput[chatOutput.length - 1]?.type !== 'assistant') && (
-                <ChatBubble role="assistant" content="" variant="mother" isStreaming={true} />
-              )}
-            <div ref={chatEndRef} />
-          </div>
+                  <span className="brand-mark text-cyber-text" style={{ fontSize: 36 }}>
+                    {t('app.name')}
+                  </span>
+                </div>
+                <div className="w-full">
+                  <QuickCommandChips />
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Chat messages — markdown stream */
+            <div className="pt-2 pb-2">
+              {/* Skeleton placeholders — shown briefly when lazy-loading older messages */}
+              {showSkeleton &&
+                [0, 1, 2].map((i) => (
+                  <ChatBubble key={`sk-${i}`} role="skeleton" content="" variant="mother" />
+                ))}
+              {visibleChatOutput.slice(-displayCount).map((msg, i, arr) => {
+                if (msg.type === 'user') {
+                  return (
+                    <ChatBubble
+                      key={i}
+                      role="user"
+                      content={msg.text}
+                      variant="mother"
+                      chips={msg.chips}
+                    />
+                  );
+                }
+                if (msg.type === 'tool_call') {
+                  return (
+                    <ToolCallCard
+                      key={`${i}-${msg.id}`}
+                      name={msg.name}
+                      args={msg.args}
+                      status={msg.status}
+                      output={msg.output}
+                    />
+                  );
+                }
+                if (msg.type === 'assistant') {
+                  const isLast = arr.slice(i + 1).every((m) => m.type !== 'assistant');
+                  const lastOutput = visibleChatOutput[visibleChatOutput.length - 1];
+                  const isCurrentResponse = isLast && lastOutput?.type === 'assistant';
+                  return (
+                    <ChatBubble
+                      key={i}
+                      role="assistant"
+                      content={msg.text}
+                      variant="mother"
+                      isStreaming={isProcessing && isCurrentResponse}
+                    />
+                  );
+                }
+                if (msg.type === 'cancelled') {
+                  const text = msg.i18nKey
+                    ? t(msg.i18nKey as import('../../i18n/types').TKey)
+                    : msg.text;
+                  return (
+                    <div key={i} className="flex justify-center my-4">
+                      <span className="text-cyber-text-muted/35 text-xs font-mono">{text}</span>
+                    </div>
+                  );
+                }
+                if (msg.type === 'error') {
+                  const text = msg.i18nKey
+                    ? t(msg.i18nKey as import('../../i18n/types').TKey)
+                    : msg.text;
+                  return <ChatBubble key={i} role="error" content={text} variant="mother" />;
+                }
+                return null;
+              })}
+              {/* Typing indicator — show when processing and no new assistant response has started */}
+              {isProcessing &&
+                (visibleChatOutput.length === 0 ||
+                  visibleChatOutput[visibleChatOutput.length - 1]?.type !== 'assistant') && (
+                  <ChatBubble role="assistant" content="" variant="mother" isStreaming={true} />
+                )}
+              <div ref={chatEndRef} />
+            </div>
+          )}
         </div>
         {/* Scroll to bottom button */}
         {showScrollBtn && (
@@ -392,14 +437,6 @@ export function MotherAgentMain() {
               currentModelId={parasiteAgent || agentModel}
               loading={false}
               onSelect={(id) => {
-                const currentId = parasiteAgent || agentModel;
-                if (currentId && id && id !== currentId) {
-                  showToast(
-                    'success',
-                    t('mother.switchEngineHintReason'),
-                    t('mother.switchEngineHint')
-                  );
-                }
                 if (id === PARASITE_CLAUDE_ID) {
                   // Switch to parasite mode. Intentionally don't clear
                   // agentModel so the user can flip back to their previous
@@ -424,6 +461,22 @@ export function MotherAgentMain() {
                   disabledLabel: t('status.notInstalled'),
                 },
               ]}
+            />
+            <ReasoningControl
+              key={JSON.stringify([
+                parasiteAgent || agentModel,
+                _agentModelData?.modelId || _agentModelData?.name,
+                _agentModelData?.baseUrl,
+                _agentModelData?.anthropicUrl,
+                _agentModelData?.scope,
+                activeConversationId,
+                isResetting,
+                isMotherActive,
+              ])}
+              levels={reasoningLevels || []}
+              value={reasoningEffort}
+              disabled={isResetting || !isMotherActive}
+              onChange={setReasoningEffort}
             />
             {isProcessing ? (
               <button

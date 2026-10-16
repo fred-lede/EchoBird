@@ -3,10 +3,16 @@ import type { useAntigravityAccounts } from './useAntigravityAccounts';
 import type { useDeepSeekAccounts } from './useDeepSeekAccounts';
 import type { useGrokAccounts } from './useGrokAccounts';
 import type { useWorkBuddyAccounts } from './useWorkBuddyAccounts';
+import type { useTraeAccounts } from './useTraeAccounts';
+import type { useKiroAccounts } from './useKiroAccounts';
 import type { useZCodeAccounts } from './useZCodeAccounts';
+import type { useMinimaxAccounts } from './useMinimaxAccounts';
+import type { useClineAccounts } from './useClineAccounts';
+import type { useQoderAccounts } from './useQoderAccounts';
 import type { useClaudeCodeAccounts } from './useClaudeCodeAccounts';
 import type { useClaudeDesktopAccounts } from './useClaudeDesktopAccounts';
 import type { useCodexAccounts } from './useCodexAccounts';
+import type { useKiloAccounts, useCopilotAccounts } from './useClientAccounts';
 import { createContext, useContext } from 'react';
 import type { ModelConfig, LocalTool } from '../../api/types';
 import type { CodexAccount } from '../../api/tauri';
@@ -32,13 +38,22 @@ export interface AppManagerContextType {
   claudeCodeAccounts: ReturnType<typeof useClaudeCodeAccounts>;
   claudeDesktopAccounts: ReturnType<typeof useClaudeDesktopAccounts>;
   workBuddyAccounts: ReturnType<typeof useWorkBuddyAccounts>;
+  kiroAccounts: ReturnType<typeof useKiroAccounts>;
+  traeAccounts: ReturnType<typeof useTraeAccounts>;
+  traeAccountGroups: Record<'trae' | 'traecn', ReturnType<typeof useTraeAccounts>>;
   workBuddyAccountGroups: Record<
     'workbuddy' | 'workbuddyai',
     ReturnType<typeof useWorkBuddyAccounts>
   >;
   zcodeAccounts: ReturnType<typeof useZCodeAccounts>;
+  minimaxAccounts: ReturnType<typeof useMinimaxAccounts>;
+  clineAccounts: ReturnType<typeof useClineAccounts>;
+  qoderAccounts: ReturnType<typeof useQoderAccounts>;
+  qoderAccountGroups: Record<'qoder' | 'qodercn', ReturnType<typeof useQoderAccounts>>;
   deepSeekAccounts: ReturnType<typeof useDeepSeekAccounts>;
   grokAccounts: ReturnType<typeof useGrokAccounts>;
+  kiloAccounts: ReturnType<typeof useKiloAccounts>;
+  copilotAccounts: ReturnType<typeof useCopilotAccounts>;
   manusAccounts: ReturnType<typeof useGrokAccounts>;
   cueAccounts: ReturnType<typeof useGrokAccounts>;
   grokBotAccounts: ReturnType<typeof useCursorAccounts>;
@@ -48,6 +63,9 @@ export interface AppManagerContextType {
   selectedCodexAccountId: string | null;
   setSelectedCodexAccountId: (id: string | null) => void;
   isLoadingCodexAccounts: boolean;
+  codexAccountsLoaded: boolean;
+  codexAccountsReadFailed: boolean;
+  codexAccountsMutationRevision: number;
   isAddingCodexAccount: boolean;
   codexOAuthRemainingSeconds: number;
   refreshingCodexAccountIds: Set<string>;

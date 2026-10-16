@@ -11,9 +11,17 @@ pub mod models;
 pub mod services;
 pub mod utils;
 
+use commands::account_proxy_commands;
+use commands::cline_account_commands;
+use commands::copilot_account_commands;
+use commands::kilo_account_commands;
+use commands::minimax_account_commands;
 use commands::mod_stub;
 use commands::model_commands;
+use commands::native_account_commands;
 use commands::process_commands;
+use commands::pulse_commands;
+use commands::qoder_account_commands;
 use commands::settings_commands;
 use commands::smart_router_commands;
 use commands::tool_commands;
@@ -66,6 +74,14 @@ static BUNDLED: BundledAssets = BundledAssets {
             include_str!("../../docs/api/tools/install/minimaxdesktop.json"),
         ),
         (
+            "qoder",
+            include_str!("../../docs/api/tools/install/qoder.json"),
+        ),
+        (
+            "qodercn",
+            include_str!("../../docs/api/tools/install/qodercn.json"),
+        ),
+        (
             "claudecode",
             include_str!("../../docs/api/tools/install/claudecode.json"),
         ),
@@ -76,6 +92,10 @@ static BUNDLED: BundledAssets = BundledAssets {
         (
             "qwencode",
             include_str!("../../docs/api/tools/install/qwencode.json"),
+        ),
+        (
+            "musecode",
+            include_str!("../../docs/api/tools/install/musecode.json"),
         ),
         (
             "aider",
@@ -156,6 +176,22 @@ static BUNDLED: BundledAssets = BundledAssets {
             include_str!("../../docs/api/tools/install/clashverge.json"),
         ),
         (
+            "kirocrew",
+            include_str!("../../docs/api/tools/install/kirocrew.json"),
+        ),
+        (
+            "kirocli",
+            include_str!("../../docs/api/tools/install/kirocli.json"),
+        ),
+        (
+            "trae",
+            include_str!("../../docs/api/tools/install/trae.json"),
+        ),
+        (
+            "traecn",
+            include_str!("../../docs/api/tools/install/traecn.json"),
+        ),
+        (
             "grok",
             include_str!("../../docs/api/tools/install/grok.json"),
         ),
@@ -174,6 +210,18 @@ static BUNDLED: BundledAssets = BundledAssets {
         (
             "zcode",
             include_str!("../../docs/api/tools/install/zcode.json"),
+        ),
+        (
+            "kilodesktop",
+            include_str!("../../docs/api/tools/install/kilodesktop.json"),
+        ),
+        (
+            "copilot",
+            include_str!("../../docs/api/tools/install/copilot.json"),
+        ),
+        (
+            "copilotdesktop",
+            include_str!("../../docs/api/tools/install/copilotdesktop.json"),
         ),
         ("dsh", include_str!("../../docs/api/tools/install/dsh.json")),
         (
@@ -779,6 +827,7 @@ pub fn run() {
             // Bind and publish actual loopback ports before the UI can read
             // them. Logging and tool paths must be ready for URL migration.
             services::anthropic_proxy::spawn_proxy_task();
+            services::musecode_proxy::spawn_proxy_task();
             services::smart_router::spawn_proxy_task();
 
             // Register shell plugin (open external URLs, folders)
@@ -1058,6 +1107,13 @@ pub fn run() {
             tool_commands::switch_grok_account,
             tool_commands::delete_grok_account,
             tool_commands::refresh_grok_account,
+            cline_account_commands::list_cline_accounts,
+            cline_account_commands::start_cline_login,
+            cline_account_commands::poll_cline_login,
+            cline_account_commands::cancel_cline_login,
+            cline_account_commands::switch_cline_account,
+            cline_account_commands::delete_cline_account,
+            cline_account_commands::refresh_cline_account,
             tool_commands::list_claude_desktop_accounts,
             tool_commands::start_claude_desktop_login,
             tool_commands::poll_claude_desktop_login,
@@ -1080,6 +1136,21 @@ pub fn run() {
             tool_commands::refresh_cue_account,
             tool_commands::delete_cue_account,
             tool_commands::list_workbuddy_accounts,
+            tool_commands::list_kiro_accounts,
+            tool_commands::start_kiro_login,
+            tool_commands::poll_kiro_login,
+            tool_commands::cancel_kiro_login,
+            tool_commands::switch_kiro_account,
+            tool_commands::refresh_kiro_account_quota,
+            tool_commands::delete_kiro_account,
+            tool_commands::list_trae_accounts,
+            tool_commands::start_trae_login,
+            tool_commands::poll_trae_login,
+            tool_commands::cancel_trae_login,
+            tool_commands::switch_trae_account,
+            tool_commands::refresh_trae_account_quota,
+            tool_commands::claim_trae_daily_credits,
+            tool_commands::delete_trae_account,
             tool_commands::list_zcode_accounts,
             tool_commands::start_zcode_login,
             tool_commands::poll_zcode_login,
@@ -1109,6 +1180,42 @@ pub fn run() {
             tool_commands::open_folder,
             tool_commands::open_tool_paths_config,
             model_commands::get_models,
+            model_commands::fetch_upstream_model_catalog,
+            model_commands::get_cached_upstream_model_catalog,
+            account_proxy_commands::list_proxy_accounts,
+            account_proxy_commands::get_account_proxy_models,
+            minimax_account_commands::list_minimax_accounts,
+            minimax_account_commands::start_minimax_login,
+            minimax_account_commands::poll_minimax_login,
+            minimax_account_commands::cancel_minimax_login,
+            minimax_account_commands::delete_minimax_account,
+            minimax_account_commands::refresh_minimax_account,
+            minimax_account_commands::claim_minimax_daily_credits,
+            native_account_commands::switch_minimax_account,
+            native_account_commands::switch_qoder_account,
+            qoder_account_commands::list_qoder_accounts,
+            qoder_account_commands::start_qoder_login,
+            qoder_account_commands::poll_qoder_login,
+            qoder_account_commands::cancel_qoder_login,
+            qoder_account_commands::refresh_qoder_account_quota,
+            qoder_account_commands::claim_qoder_daily_credits,
+            qoder_account_commands::delete_qoder_account,
+            kilo_account_commands::list_kilo_accounts,
+            kilo_account_commands::start_kilo_login,
+            kilo_account_commands::poll_kilo_login,
+            kilo_account_commands::cancel_kilo_login,
+            kilo_account_commands::switch_kilo_account,
+            kilo_account_commands::refresh_kilo_account,
+            kilo_account_commands::delete_kilo_account,
+            kilo_account_commands::capture_kilo_account,
+            copilot_account_commands::list_copilot_accounts,
+            copilot_account_commands::import_copilot_accounts,
+            copilot_account_commands::start_copilot_login,
+            copilot_account_commands::poll_copilot_login,
+            copilot_account_commands::cancel_copilot_login,
+            copilot_account_commands::switch_copilot_account,
+            copilot_account_commands::refresh_copilot_account,
+            copilot_account_commands::delete_copilot_account,
             model_commands::add_model,
             model_commands::delete_model,
             model_commands::update_model,
@@ -1151,6 +1258,7 @@ pub fn run() {
             process_commands::get_store_models,
             process_commands::get_model_directory,
             process_commands::get_free_model_directory,
+            process_commands::get_cached_free_model_directory,
             process_commands::download_model,
             process_commands::pause_download,
             process_commands::cancel_download,
@@ -1171,6 +1279,7 @@ pub fn run() {
             agent_commands::agent_send_message,
             agent_commands::agent_abort,
             agent_commands::agent_reset,
+            agent_commands::agent_reset_conversation_context,
             parasite_commands::parasite_list_installed,
             parasite_commands::parasite_send_message,
             parasite_commands::parasite_abort,
@@ -1180,6 +1289,10 @@ pub fn run() {
             ai_career_commands::ai_career_family_history,
             ai_career_commands::ai_career_heatmap,
             ai_career_commands::ai_career_token_bytes,
+            ai_career_commands::ai_career_daily_tokens,
+            ai_career_commands::reveal_ai_career_session_file,
+            pulse_commands::pulse_save,
+            pulse_commands::pulse_load_all,
             settings_commands::set_avatar,
             settings_commands::get_avatar,
         ])

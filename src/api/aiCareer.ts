@@ -16,7 +16,11 @@ export interface SavedSession {
   session_token: string | null;
   saved_at: string;
   file_path: string | null;
+  model_id?: string | null;
+  message_count?: number | null;
   turn_count: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
 }
 
 export interface HeatmapEntry {
@@ -24,6 +28,17 @@ export interface HeatmapEntry {
   ts: number;
   /// Approximate message count for the session.
   count: number;
+}
+
+export interface DailyTokenEntry {
+  ts: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface DailyTokenResponse {
+  entries: DailyTokenEntry[];
+  unavailable_families: AiCareerFamily[];
 }
 
 /// One page of a single family's session history, newest first. The page is
@@ -37,16 +52,28 @@ export async function aiCareerFamilyHistory(
 }
 
 /// Contribution-heatmap entries across all six families (210-day lookback).
-export async function aiCareerHeatmap(): Promise<HeatmapEntry[]> {
-  return invoke('ai_career_heatmap');
+export async function aiCareerHeatmap(
+  family: AiCareerFamily | null = null
+): Promise<HeatmapEntry[]> {
+  return invoke('ai_career_heatmap', { family });
 }
 
 /// Total on-disk byte size across all six families' session files. The
 /// frontend divides this by a bytes-per-token ratio for an approximate ("≈")
 /// cumulative token count — works even when a provider doesn't report real
 /// usage (third-party models often log 0), since it measures content volume.
-export async function aiCareerTokenBytes(): Promise<number> {
-  return invoke('ai_career_token_bytes');
+export async function aiCareerTokenBytes(family: AiCareerFamily | null = null): Promise<number> {
+  return invoke('ai_career_token_bytes', { family });
+}
+
+export async function aiCareerDailyTokens(
+  family: AiCareerFamily | null = null
+): Promise<DailyTokenResponse> {
+  return invoke('ai_career_daily_tokens', { family });
+}
+
+export async function revealAiCareerSessionFile(path: string): Promise<void> {
+  return invoke('reveal_ai_career_session_file', { path });
 }
 
 /// Set the profile avatar from a user-picked image file (re-encoded to a

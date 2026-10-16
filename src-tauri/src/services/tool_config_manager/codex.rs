@@ -48,6 +48,9 @@ fn codex_compact_limit_for(context_window: u64) -> u64 {
 }
 
 fn codex_web_search_mode(base_url: &str, enabled: Option<bool>) -> &'static str {
+    if crate::services::smart_router::is_router_url(base_url) {
+        return "disabled";
+    }
     if enabled.unwrap_or_else(|| {
         !codex_catalog::url_matches_domain(base_url, "deepseek.com")
             && !codex_catalog::url_matches_domain(base_url, "xiaomimimo.com")
@@ -657,6 +660,24 @@ mod tests {
                 assert_eq!(toml_read_top(&out, "web_search"), expected);
             }
         }
+    }
+
+    #[test]
+    fn auto_router_disables_hosted_search_without_changing_other_local_providers() {
+        for enabled in [None, Some(true), Some(false)] {
+            let out = write_codex_canonical_fields(
+                "",
+                "http://127.0.0.1:53683/v1",
+                "auto",
+                DEFAULT_CODEX_CONTEXT_WINDOW,
+                enabled,
+            );
+            assert_eq!(toml_read_top(&out, "web_search"), "disabled");
+        }
+        assert_eq!(
+            codex_web_search_mode("http://127.0.0.1:1234/v1", Some(true)),
+            "live"
+        );
     }
 
     #[test]
