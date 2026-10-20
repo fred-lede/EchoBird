@@ -1,7 +1,7 @@
 {
   "$schema-comment": "Remote-updatable free model catalog.",
   "version": 1,
-  "updatedAt": "2026-10-16",
+  "updatedAt": "2026-10-20",
   "models": [
     {
       "id": "kilo:kilo-auto/free",
@@ -2562,6 +2562,38 @@
       "phoneRequired": true,
       "commercialOk": false,
       "verifiedAt": "2026-10-16"
+    },
+    {
+      "id": "openrouter:minimax/minimax-m3.1-flash:free",
+      "providerId": "openrouter",
+      "provider": "OpenRouter",
+      "modelId": "minimax/minimax-m3.1-flash:free",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "freeType": "renewing-quota",
+      "freeTier": "A rotating catalog of models whose IDs end in :free, available behind one OpenRouter API key",
+      "rateLimits": "20 req/min; 50 req/day under 10 credits purchased lifetime, 1000 req/day once 10+ credits purchased (one-time, not a subscription)",
+      "notes": "ToS (Jul 2026) prohibits reselling API access or building a competing service — platform-wide, not just the free models; per-model terms still apply",
+      "docsUrl": "https://openrouter.ai/docs/api-reference/limits",
+      "cardRequired": false,
+      "phoneRequired": false,
+      "commercialOk": true,
+      "verifiedAt": "2026-10-20"
+    },
+    {
+      "id": "openrouter:nvidia/nemotron-3.5-super-vl:free",
+      "providerId": "openrouter",
+      "provider": "OpenRouter",
+      "modelId": "nvidia/nemotron-3.5-super-vl:free",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "freeType": "renewing-quota",
+      "freeTier": "A rotating catalog of models whose IDs end in :free, available behind one OpenRouter API key",
+      "rateLimits": "20 req/min; 50 req/day under 10 credits purchased lifetime, 1000 req/day once 10+ credits purchased (one-time, not a subscription)",
+      "notes": "ToS (Jul 2026) prohibits reselling API access or building a competing service — platform-wide, not just the free models; per-model terms still apply",
+      "docsUrl": "https://openrouter.ai/docs/api-reference/limits",
+      "cardRequired": false,
+      "phoneRequired": false,
+      "commercialOk": true,
+      "verifiedAt": "2026-10-20"
     }
   ]
 }
